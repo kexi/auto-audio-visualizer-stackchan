@@ -1,6 +1,8 @@
 import type { AudioEngine } from '../audio/AudioEngine';
 import type { GlScene, Scene, Scene2D, SceneContext, GlSceneContext } from '../scenes/types';
 import type { Variation } from '../variation/types';
+import type { Clock } from './clock';
+import { realtimeClock } from './clock';
 import { checkFloatColorSupport, type FloatColorSupport } from './glutil';
 
 /** Degrees the base hue advances per second when cycling. */
@@ -22,6 +24,8 @@ export interface RendererOptions {
   getFixedHue: () => number | null;
   /** Initial seeded variation (the renderer always holds one). */
   variation: Variation;
+  /** Time source for the frame loop. Defaults to realtimeClock. */
+  clock?: Clock;
 }
 
 /**
@@ -37,6 +41,7 @@ export class Renderer {
   private readonly engine: AudioEngine;
   private readonly getGain: () => number;
   private readonly getFixedHue: () => number | null;
+  private readonly clock: Clock;
 
   private variation: Variation;
 
@@ -72,6 +77,7 @@ export class Renderer {
     this.getGain = opts.getGain;
     this.getFixedHue = opts.getFixedHue;
     this.variation = opts.variation;
+    this.clock = opts.clock ?? realtimeClock;
 
     const ctx = this.canvas.getContext('2d', { alpha: true });
     if (!ctx) throw new Error('2D canvas context unavailable');
@@ -196,7 +202,7 @@ export class Renderer {
 
   start(): void {
     if (this.rafId) return;
-    this.startTime = performance.now();
+    this.startTime = this.clock.now();
     this.lastTime = this.startTime;
     this.rafId = requestAnimationFrame(this.tick);
   }
@@ -328,9 +334,10 @@ export class Renderer {
 
   // ---- Frame loop ----------------------------------------------------------
 
-  private readonly tick = (now: number): void => {
+  private readonly tick = (_now: number): void => {
     this.rafId = requestAnimationFrame(this.tick);
 
+    const now = this.clock.now();
     const t = (now - this.startTime) / 1000;
     let dt = (now - this.lastTime) / 1000;
     this.lastTime = now;
