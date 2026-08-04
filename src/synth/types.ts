@@ -108,3 +108,25 @@ export interface RenderBudget {
   maxHeavyGenerators: number;
   maxStatefulGenerators: number;
 }
+
+export type TransitionEasing = 'linear' | 'easeInOut';
+
+export interface TransitionSpec {
+  /** palette (hue/saturation/lightness) の遷移時間 ms */
+  paletteMs: number;
+  /** 数値パラメータの遷移時間 ms */
+  parameterMs: number;
+  /** ModulationRoute の amount の遷移時間 ms */
+  modulationMs: number;
+  /** トポロジ変更時のデッキクロスフェード時間 ms */
+  topologyMs: number;
+  easing: TransitionEasing;
+}
+
+export const DEFAULT_TRANSITION: TransitionSpec = {
+  paletteMs: 1200,
+  parameterMs: 800,
+  modulationMs: 1000,
+  topologyMs: 2000,
+  easing: 'easeInOut',
+};

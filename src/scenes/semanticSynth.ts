@@ -307,6 +307,7 @@ export const semanticSynthScene: GlScene = {
     uni.f1('uTreble', audio.treble);
     uni.f1('uLevel', audio.level);
     uni.f1('uBeat', audio.tempoLocked ? audio.gridPulse : audio.beatIntensity);
+    uni.f1('uFade', 1.0);
 
     const seedLoc = gl.getUniformLocation(prog, SEED_UNIFORM);
     if (seedLoc) {

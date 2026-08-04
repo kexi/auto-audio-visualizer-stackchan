@@ -132,6 +132,7 @@ export function assemblePatch(
   lines.push('uniform vec2 uRes;');
   lines.push('uniform float uTime;');
   lines.push('uniform float uBass, uMid, uTreble, uLevel, uBeat;');
+  lines.push('uniform float uFade;');
   lines.push(`uniform uint ${SEED_UNIFORM};`);
   lines.push('');
 
@@ -211,6 +212,7 @@ export function assemblePatch(
       lines.push(`  fragColor = ${r.fnName}(v, p);`);
     }
   }
+  lines.push('  fragColor *= uFade;');
   lines.push('}');
   lines.push('');
 
