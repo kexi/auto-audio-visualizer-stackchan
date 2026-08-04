@@ -6,69 +6,69 @@ import {
   FULLSCREEN_VERT,
   Uniforms,
 } from '../render/glutil';
+import { derivePatch } from '../synth/derive';
 import { assemblePatch, SEED_UNIFORM, type AssembledShader } from '../synth/gl/assemble';
 import { inlineCatalog } from '../synth/generators';
+import {
+  applyModulation,
+  createModulationEngine,
+  type ModulationEngine,
+} from '../synth/modulation';
 import { namespaceToU32, seedToU32 } from '../synth/rng';
+import { serializePatch } from '../synth/schema';
 import type { VisualPatch } from '../synth/types';
 
 /**
  * Semantic Synth — Phase 1 demo scene.
- * Builds a fixed grid→noise→mirror→neon Patch, assembles it to GLSL, and
- * recompiles when the variation seed changes.
+ * Derives a Patch from the variation seed, assembles GLSL, modulates params
+ * from audio, and caches compiled programs (LRU, async when available).
  */
 
-let prog: WebGLProgram | null = null;
-let vao: WebGLVertexArrayObject | null = null;
-let uni: Uniforms | null = null;
-let lastSeed: string | null = null;
-let lastFragSrc: string | null = null;
-let assembled: AssembledShader | null = null;
-let currentPatch: VisualPatch | null = null;
+const CACHE_LIMIT = 8;
 
-function buildDefaultPatch(seed: string, hue: number): VisualPatch {
-  return {
-    schemaVersion: 1,
-    seed,
-    operators: [
-      {
-        id: 'src0',
-        generatorId: 'grid',
-        generatorVersion: 1,
-        parameters: { cells: 8, thickness: 0.08 },
-      },
-      {
-        id: 'fld0',
-        generatorId: 'noise',
-        generatorVersion: 1,
-        parameters: { scale: 2, amount: 0.15 },
-      },
-      {
-        id: 'mod0',
-        generatorId: 'mirror',
-        generatorVersion: 1,
-        parameters: { axis: 'x' },
-      },
-      {
-        id: 'mat0',
-        generatorId: 'neon',
-        generatorVersion: 1,
-        parameters: { hue, intensity: 1.2 },
-      },
-    ],
-    routes: [],
-    palette: {
-      mode: 'mono',
-      hueOffset: 0,
-      saturation: 80,
-      lightness: 55,
-    },
-    composition: {
-      symmetry: 4,
-      scale: 1,
-      speed: 1,
-    },
-    qualityTier: 'medium',
-  };
+type CacheEntry = {
+  key: string;
+  prog: WebGLProgram;
+  uni: Uniforms;
+};
+
+type ActiveState = {
+  seed: string;
+  key: string;
+  patch: VisualPatch;
+  assembled: AssembledShader;
+  prog: WebGLProgram;
+  uni: Uniforms;
+  modEngine: ModulationEngine;
+};
+
+type PendingCompile = {
+  seed: string;
+  key: string;
+  patch: VisualPatch;
+  assembled: AssembledShader;
+  prog: WebGLProgram;
+  vs: WebGLShader;
+  fs: WebGLShader;
+};
+
+let vao: WebGLVertexArrayObject | null = null;
+let desiredSeed: string | null = null;
+let current: ActiveState | null = null;
+let pending: PendingCompile | null = null;
+/** LRU: oldest at index 0, newest at end. */
+const programCache: CacheEntry[] = [];
+let parallelCompile: { COMPLETION_STATUS_KHR: number } | null | undefined;
+
+function getParallelCompileExt(
+  gl: WebGL2RenderingContext,
+): { COMPLETION_STATUS_KHR: number } | null {
+  if (parallelCompile !== undefined) return parallelCompile;
+  const ext = gl.getExtension('KHR_parallel_shader_compile') as {
+    COMPLETION_STATUS_KHR: number;
+  } | null;
+  parallelCompile = ext;
+  return ext;
 }
 
 function setParamUniform(
@@ -96,29 +96,179 @@ function setParamUniform(
       break;
     }
   }
-  // silence unused gl when Uniforms covers it
   void gl;
 }
 
-function rebuild(gl: WebGL2RenderingContext, seed: string, hue: number): void {
-  const patch = buildDefaultPatch(seed, hue);
-  const next = assemblePatch(patch, inlineCatalog);
+function cacheLookup(key: string): CacheEntry | null {
+  const idx = programCache.findIndex((e) => e.key === key);
+  if (idx < 0) return null;
+  const [entry] = programCache.splice(idx, 1);
+  if (!entry) return null;
+  programCache.push(entry);
+  return entry;
+}
 
-  // Recompile only when fragment source actually changes (structure/params shape).
-  if (next.fragSrc !== lastFragSrc || !prog) {
-    if (prog) {
-      gl.deleteProgram(prog);
-      prog = null;
-      uni = null;
+function cacheInsert(gl: WebGL2RenderingContext, entry: CacheEntry): void {
+  const existing = programCache.findIndex((e) => e.key === entry.key);
+  if (existing >= 0) {
+    const old = programCache.splice(existing, 1)[0]!;
+    if (old.prog !== entry.prog && old.prog !== current?.prog) {
+      gl.deleteProgram(old.prog);
     }
-    prog = compileProgram(gl, FULLSCREEN_VERT, next.fragSrc);
-    uni = new Uniforms(gl, prog);
-    lastFragSrc = next.fragSrc;
+  }
+  programCache.push(entry);
+  while (programCache.length > CACHE_LIMIT) {
+    let victimIdx = -1;
+    for (let i = 0; i < programCache.length; i++) {
+      if (programCache[i]!.prog !== current?.prog) {
+        victimIdx = i;
+        break;
+      }
+    }
+    if (victimIdx < 0) break;
+    const [victim] = programCache.splice(victimIdx, 1);
+    if (victim) gl.deleteProgram(victim.prog);
+  }
+}
+
+function abandonPending(gl: WebGL2RenderingContext): void {
+  if (!pending) return;
+  gl.deleteShader(pending.vs);
+  gl.deleteShader(pending.fs);
+  gl.deleteProgram(pending.prog);
+  pending = null;
+}
+
+function promote(
+  gl: WebGL2RenderingContext,
+  seed: string,
+  key: string,
+  patch: VisualPatch,
+  assembled: AssembledShader,
+  prog: WebGLProgram,
+  uni: Uniforms,
+): void {
+  cacheInsert(gl, { key, prog, uni });
+  current = {
+    seed,
+    key,
+    patch,
+    assembled,
+    prog,
+    uni,
+    modEngine: createModulationEngine(patch.routes),
+  };
+}
+
+function beginCompile(
+  gl: WebGL2RenderingContext,
+  seed: string,
+  key: string,
+  patch: VisualPatch,
+  assembled: AssembledShader,
+): void {
+  abandonPending(gl);
+
+  const ext = getParallelCompileExt(gl);
+  if (!ext) {
+    try {
+      const prog = compileProgram(gl, FULLSCREEN_VERT, assembled.fragSrc);
+      const uni = new Uniforms(gl, prog);
+      promote(gl, seed, key, patch, assembled, prog, uni);
+    } catch (e) {
+      console.error('[semantic-synth] shader compile failed:', e);
+    }
+    return;
   }
 
-  assembled = next;
-  currentPatch = patch;
-  lastSeed = seed;
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  const prog = gl.createProgram();
+  if (!vs || !fs || !prog) {
+    if (vs) gl.deleteShader(vs);
+    if (fs) gl.deleteShader(fs);
+    if (prog) gl.deleteProgram(prog);
+    console.error('[semantic-synth] failed to create shader/program objects');
+    return;
+  }
+
+  gl.shaderSource(vs, FULLSCREEN_VERT);
+  gl.compileShader(vs);
+  gl.shaderSource(fs, assembled.fragSrc);
+  gl.compileShader(fs);
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+
+  pending = { seed, key, patch, assembled, prog, vs, fs };
+}
+
+function pollPending(gl: WebGL2RenderingContext): void {
+  if (!pending) return;
+  const ext = getParallelCompileExt(gl);
+  if (!ext) return;
+
+  const done = gl.getProgramParameter(pending.prog, ext.COMPLETION_STATUS_KHR);
+  if (!done) return;
+
+  const { seed, key, patch, assembled, prog, vs, fs } = pending;
+  pending = null;
+
+  const vsOk = gl.getShaderParameter(vs, gl.COMPILE_STATUS);
+  const fsOk = gl.getShaderParameter(fs, gl.COMPILE_STATUS);
+  const linkOk = gl.getProgramParameter(prog, gl.LINK_STATUS);
+
+  if (!vsOk || !fsOk || !linkOk) {
+    const vsLog = gl.getShaderInfoLog(vs) ?? '';
+    const fsLog = gl.getShaderInfoLog(fs) ?? '';
+    const progLog = gl.getProgramInfoLog(prog) ?? '';
+    console.error('[semantic-synth] async shader compile/link failed:\n', vsLog, fsLog, progLog);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    gl.deleteProgram(prog);
+    return;
+  }
+
+  gl.detachShader(prog, vs);
+  gl.detachShader(prog, fs);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+
+  const uni = new Uniforms(gl, prog);
+  promote(gl, seed, key, patch, assembled, prog, uni);
+}
+
+function ensurePatch(gl: WebGL2RenderingContext, seed: string): void {
+  if (desiredSeed === seed) {
+    // Still waiting on async compile for this seed, or already current.
+    if (pending && pending.seed === seed) {
+      pollPending(gl);
+    }
+    return;
+  }
+
+  desiredSeed = seed;
+  abandonPending(gl);
+
+  const patch = derivePatch(seed, { catalog: inlineCatalog });
+  const assembled = assemblePatch(patch, inlineCatalog);
+  const key = serializePatch(patch);
+
+  const hit = cacheLookup(key);
+  if (hit) {
+    current = {
+      seed,
+      key,
+      patch,
+      assembled,
+      prog: hit.prog,
+      uni: hit.uni,
+      modEngine: createModulationEngine(patch.routes),
+    };
+    return;
+  }
+
+  beginCompile(gl, seed, key, patch, assembled);
 }
 
 export const semanticSynthScene: GlScene = {
@@ -128,29 +278,26 @@ export const semanticSynthScene: GlScene = {
 
   init(gl: WebGL2RenderingContext) {
     vao = createEmptyVao(gl);
-    // Program is built on first draw (needs seed from variation context).
-    prog = null;
-    uni = null;
-    lastSeed = null;
-    lastFragSrc = null;
-    assembled = null;
-    currentPatch = null;
+    desiredSeed = null;
+    current = null;
+    pending = null;
+    programCache.length = 0;
+    parallelCompile = undefined;
+    void gl;
   },
 
   draw(s: GlSceneContext) {
-    const { gl, pxW, pxH, t, audio, hue, va } = s;
+    const { gl, pxW, pxH, t, dt, audio, va } = s;
     if (!vao) return;
 
-    if (lastSeed !== va.seed || !prog || !uni || !assembled || !currentPatch) {
-      rebuild(gl, va.seed, hue);
-    }
-    if (!prog || !uni || !assembled || !currentPatch) return;
+    ensurePatch(gl, va.seed);
+    pollPending(gl);
 
-    // Map scene hue into neon material each frame (shader structure unchanged).
-    const matOp = currentPatch.operators.find((o) => o.id === 'mat0');
-    if (matOp) {
-      matOp.parameters.hue = hue;
-    }
+    if (!current) return;
+
+    const { patch, assembled, prog, uni, modEngine } = current;
+    const resolved = modEngine.update(audio, t, dt);
+    const values = applyModulation(patch, inlineCatalog, resolved);
 
     gl.useProgram(prog);
     uni.f2('uRes', pxW, pxH);
@@ -163,7 +310,7 @@ export const semanticSynthScene: GlScene = {
 
     const seedLoc = gl.getUniformLocation(prog, SEED_UNIFORM);
     if (seedLoc) {
-      gl.uniform1ui(seedLoc, seedToU32(currentPatch.seed) >>> 0);
+      gl.uniform1ui(seedLoc, seedToU32(patch.seed) >>> 0);
     }
 
     for (const { opId, name } of assembled.nsUniforms) {
@@ -174,13 +321,14 @@ export const semanticSynthScene: GlScene = {
     }
 
     for (const { opId, paramId, name } of assembled.uniforms) {
-      const op = currentPatch.operators.find((o) => o.id === opId);
+      const op = patch.operators.find((o) => o.id === opId);
       if (!op) continue;
       const gen = inlineCatalog.get(op.generatorId);
       if (!gen) continue;
       const paramDef = gen.def.parameters.find((p) => p.id === paramId);
       if (!paramDef) continue;
-      const raw = op.parameters[paramId] ?? paramDef.default;
+      const key = `${opId}.${paramId}`;
+      const raw = values.get(key) ?? op.parameters[paramId] ?? paramDef.default;
       setParamUniform(gl, uni, name, paramDef.kind, raw, paramDef.options);
     }
 
@@ -188,14 +336,22 @@ export const semanticSynthScene: GlScene = {
   },
 
   dispose(gl: WebGL2RenderingContext) {
-    if (prog) gl.deleteProgram(prog);
+    abandonPending(gl);
+    const deleted = new Set<WebGLProgram>();
+    for (const entry of programCache) {
+      if (!deleted.has(entry.prog)) {
+        gl.deleteProgram(entry.prog);
+        deleted.add(entry.prog);
+      }
+    }
+    programCache.length = 0;
+    if (current && !deleted.has(current.prog)) {
+      gl.deleteProgram(current.prog);
+    }
+    current = null;
+    desiredSeed = null;
     if (vao) gl.deleteVertexArray(vao);
-    prog = null;
     vao = null;
-    uni = null;
-    lastSeed = null;
-    lastFragSrc = null;
-    assembled = null;
-    currentPatch = null;
+    parallelCompile = undefined;
   },
 };
