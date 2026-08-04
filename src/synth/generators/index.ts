@@ -1,3 +1,7 @@
+/**
+ * 実装付きカタログ（InlineGeneratorCatalog）。
+ * 検証・コスト計算だけなら ../catalog.ts の GeneratorCatalog（純粋なメタデータ層）で足りる。
+ */
 import type { GeneratorDefinition } from '../types';
 import { branchGenerator } from './branch';
 import { cellsGenerator } from './cells';

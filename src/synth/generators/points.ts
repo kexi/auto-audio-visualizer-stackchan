@@ -67,7 +67,10 @@ float ${fnName}(vec2 p) {
     }
   }
   float r = max(sz, 1e-4);
-  return 1.0 - smoothstep(0.0, r, best);
+  // Resolution-independent AA: dots stay ≥ ~0.75px so small size / low dens still register.
+  float px = fwidth(best);
+  float w = max(r, px * 0.75);
+  return 1.0 - smoothstep(w - px, w + px, best);
 }
 `.trim();
   },

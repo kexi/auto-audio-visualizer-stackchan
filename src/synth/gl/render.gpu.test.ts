@@ -23,6 +23,8 @@ import type { GeneratorDefinition, VisualOperator, VisualPatch } from '../types'
 // 64 undersamples default grid lines (cells=8, thickness=0.08) — pixel centers
 // miss thin strokes and read fully transparent; 256 leaves a safe sampling margin.
 const SIZE = 256;
+// ~1/10 of 1080p after a half-res degradation step; thin lines without fwidth AA vanish here.
+const SIZE_LOW = 96;
 const SEED = 'gpu-render-seed';
 
 const executablePath = (globalThis as { process?: { env?: { CHROMIUM_BIN?: string } } }).process
@@ -134,10 +136,14 @@ type UniformSpec =
  * Build serializable uniform values on the Node side (mirrors semanticSynth draw).
  * Defaults come from op.parameters (already filled from generator defs).
  */
-function buildUniformSpecs(patch: VisualPatch, assembled: AssembledShader): UniformSpec[] {
+function buildUniformSpecs(
+  patch: VisualPatch,
+  assembled: AssembledShader,
+  size: number = SIZE,
+): UniformSpec[] {
   const specs: UniformSpec[] = [
     { name: 'uTime', kind: '1f', value: 1.0 },
-    { name: 'uRes', kind: '2f', value: [SIZE, SIZE] },
+    { name: 'uRes', kind: '2f', value: [size, size] },
     { name: 'uBass', kind: '1f', value: 0.5 },
     { name: 'uMid', kind: '1f', value: 0.5 },
     { name: 'uTreble', kind: '1f', value: 0.5 },
@@ -338,6 +344,7 @@ async function renderInBrowser(
 async function renderPatch(
   page: Page,
   { patch }: NamedPatch,
+  size: number = SIZE,
 ): Promise<{ ok: true; pixels: number[] } | { ok: false; log: string }> {
   let assembled: AssembledShader;
   try {
@@ -349,9 +356,9 @@ async function renderPatch(
     };
   }
 
-  const uniforms = buildUniformSpecs(patch, assembled);
+  const uniforms = buildUniformSpecs(patch, assembled, size);
   try {
-    return await renderInBrowser(page, FULLSCREEN_VERT, assembled.fragSrc, uniforms, SIZE);
+    return await renderInBrowser(page, FULLSCREEN_VERT, assembled.fragSrc, uniforms, size);
   } catch (e) {
     return {
       ok: false,
@@ -497,6 +504,41 @@ describe('synth/gl assemblePatch GPU render', () => {
       }
 
       console.log(`[render.gpu.test] all ${ALL_RENDER.length} unique patches are non-uniform`);
+    },
+    renderTimeoutMs,
+  );
+
+  it(
+    `low-res (${SIZE_LOW}): all Sources keep non-zero alpha (${SOURCE_NEON.length} patches)`,
+    async () => {
+      expect(SOURCE_NEON.length).toBeGreaterThan(0);
+      console.log(
+        `[render.gpu.test] verifying ${SOURCE_NEON.length} source×neon patches at ${SIZE_LOW}px for non-zero alpha`,
+      );
+
+      const failures: string[] = [];
+
+      for (const named of SOURCE_NEON) {
+        const result = await renderPatch(pg, named, SIZE_LOW);
+        if (!result.ok) {
+          failures.push(`${named.label}: ${result.log}`);
+          continue;
+        }
+        if (!hasNonZeroAlpha(result.pixels)) {
+          failures.push(`${named.label}: empty alpha (all pixels alpha=0) at ${SIZE_LOW}px`);
+        }
+      }
+
+      if (failures.length > 0) {
+        throw new Error(
+          `${failures.length}/${SOURCE_NEON.length} source patch(es) failed low-res non-empty alpha:\n\n` +
+            failures.join('\n'),
+        );
+      }
+
+      console.log(
+        `[render.gpu.test] all ${SOURCE_NEON.length} source×neon patches have non-zero alpha at ${SIZE_LOW}px`,
+      );
     },
     renderTimeoutMs,
   );

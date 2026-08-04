@@ -7,7 +7,7 @@ import {
   Uniforms,
 } from '../render/glutil';
 import type { Variation } from '../variation/types';
-import { hslToRgb, spreadHue, clamp, clamp01, lerp } from './util';
+import { hslToRgb, spreadHue, clamp, clamp01, lerp, smoothK } from './util';
 
 /**
  * Lava — a metaball lava lamp. CPU updates N blob centres/radii with slow
@@ -121,10 +121,6 @@ let sBass = 0;
 const cLo: [number, number, number] = [0, 0, 0];
 const cHi: [number, number, number] = [0, 0, 0];
 const cRim: [number, number, number] = [0, 0, 0];
-
-function smoothK(dt: number, tau: number): number {
-  return 1 - Math.exp(-dt / Math.max(0.0001, tau));
-}
 
 /** (Re)build the blob set deterministically from the variation. */
 function buildBlobs(va: Variation): void {

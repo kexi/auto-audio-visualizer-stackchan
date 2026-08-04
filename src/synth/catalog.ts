@@ -5,6 +5,9 @@
  *
  * Catalog holds only the latest definition per id.
  * get(id, version): when version is given and does not match the stored version, returns undefined.
+ *
+ * 純粋なメタデータ層。GLSL 実装を伴うカタログは generators/index.ts の
+ * InlineGeneratorCatalog。
  */
 import type { GeneratorCategory, GeneratorDefinition } from './types';
 
@@ -39,6 +42,3 @@ export function createCatalog(defs: GeneratorDefinition[]): GeneratorCatalog {
     },
   };
 }
-
-/** Empty registry — real Generator definitions are not registered here. */
-export const emptyCatalog: GeneratorCatalog = createCatalog([]);

@@ -55,7 +55,10 @@ float ${fnName}(vec2 p) {
   vec2 d = min(fp, 1.0 - fp);
   float md = min(d.x, d.y);
   float halfW = max(thickness * 0.5, 1e-4);
-  return 1.0 - smoothstep(0.0, halfW, md);
+  // Resolution-independent AA: keep stroke ≥ ~0.75px and soft-edge over ~1px.
+  float px = fwidth(md);
+  float w = max(halfW, px * 0.75);
+  return 1.0 - smoothstep(w - px, w + px, md);
 }
 `.trim();
   },
