@@ -205,7 +205,7 @@ export function assemblePatch(
 
   lines.push('  // 5. material(s) — last wins if multiple');
   if (materials.length === 0) {
-    lines.push('  fragColor = vec4(v, v, v, 1.0);');
+    lines.push('  fragColor = vec4(v, v, v, v);');
   } else {
     for (const r of materials) {
       lines.push(`  fragColor = ${r.fnName}(v, p);`);

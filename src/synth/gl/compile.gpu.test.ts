@@ -1,15 +1,15 @@
 /**
  * GPU compile/link smoke test for assemblePatch output.
  *
- * Playwright + Chromium; skip with visible reason if browser unavailable.
- * Follows rng.gpu.test.ts patterns.
+ * Covers every inline generator solo and linear source×{field,modifier,material}
+ * combinations. Playwright + Chromium; skip with visible reason if browser unavailable.
  */
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, describe, expect, it } from 'vitest';
 import { FULLSCREEN_VERT } from '../../render/glutil';
 import { assemblePatch } from './assemble';
 import { inlineCatalog } from '../generators';
-import type { VisualPatch } from '../types';
+import type { GeneratorDefinition, VisualOperator, VisualPatch } from '../types';
 
 const executablePath = (globalThis as { process?: { env?: { CHROMIUM_BIN?: string } } }).process
   ?.env?.CHROMIUM_BIN;
@@ -19,41 +19,158 @@ const launchOptions = {
   ...(executablePath ? { executablePath } : {}),
 };
 
-function defaultPatch(seed = 'gpu-compile-seed'): VisualPatch {
+function paramsFromDef(def: GeneratorDefinition): Record<string, number | string | boolean> {
+  const out: Record<string, number | string | boolean> = {};
+  for (const p of def.parameters) {
+    out[p.id] = p.default;
+  }
+  return out;
+}
+
+function opFromDef(id: string, def: GeneratorDefinition): VisualOperator {
+  return {
+    id,
+    generatorId: def.id,
+    generatorVersion: def.version,
+    parameters: paramsFromDef(def),
+  };
+}
+
+function basePatch(operators: VisualOperator[], seed = 'gpu-compile-seed'): VisualPatch {
   return {
     schemaVersion: 1,
     seed,
-    operators: [
-      {
-        id: 'src0',
-        generatorId: 'grid',
-        generatorVersion: 1,
-        parameters: { cells: 8, thickness: 0.08 },
-      },
-      {
-        id: 'fld0',
-        generatorId: 'noise',
-        generatorVersion: 1,
-        parameters: { scale: 2, amount: 0.15 },
-      },
-      {
-        id: 'mod0',
-        generatorId: 'mirror',
-        generatorVersion: 1,
-        parameters: { axis: 'x' },
-      },
-      {
-        id: 'mat0',
-        generatorId: 'neon',
-        generatorVersion: 1,
-        parameters: { hue: 200, intensity: 1.2 },
-      },
-    ],
+    operators,
     routes: [],
     palette: { mode: 'mono', hueOffset: 0, saturation: 80, lightness: 55 },
     composition: { symmetry: 4, scale: 1, speed: 1 },
     qualityTier: 'medium',
   };
+}
+
+function requireGen(id: string) {
+  const g = inlineCatalog.get(id);
+  if (!g) throw new Error(`catalog missing generator "${id}"`);
+  return g;
+}
+
+/** Classify for patch construction (mirrors assemble roleOf). */
+function roleOf(
+  def: GeneratorDefinition,
+): 'source' | 'field' | 'mod_coord' | 'mod_value' | 'material' {
+  if (def.category === 'source') return 'source';
+  if (def.category === 'field') return 'field';
+  if (def.category === 'material') return 'material';
+  if (def.category === 'modifier') {
+    if (def.output === 'vector') return 'mod_coord';
+    if (def.output === 'field') return 'mod_value';
+  }
+  throw new Error(`unclassifiable generator ${def.id}`);
+}
+
+interface NamedPatch {
+  label: string;
+  patch: VisualPatch;
+}
+
+/** Minimal valid patch that includes the given generator. */
+function soloPatchFor(genId: string): NamedPatch {
+  const g = requireGen(genId);
+  const role = roleOf(g.def);
+  const grid = requireGen('grid');
+  const neon = requireGen('neon');
+
+  switch (role) {
+    case 'source':
+      return {
+        label: `solo/source:${genId}`,
+        patch: basePatch([opFromDef('src0', g.def), opFromDef('mat0', neon.def)]),
+      };
+    case 'field':
+      return {
+        label: `solo/field:${genId}`,
+        patch: basePatch([
+          opFromDef('src0', grid.def),
+          opFromDef('fld0', g.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      };
+    case 'mod_coord':
+      return {
+        label: `solo/mod_coord:${genId}`,
+        patch: basePatch([
+          opFromDef('mod0', g.def),
+          opFromDef('src0', grid.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      };
+    case 'mod_value':
+      return {
+        label: `solo/mod_value:${genId}`,
+        patch: basePatch([
+          opFromDef('src0', grid.def),
+          opFromDef('mod0', g.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      };
+    case 'material':
+      return {
+        label: `solo/material:${genId}`,
+        patch: basePatch([opFromDef('src0', grid.def), opFromDef('mat0', g.def)]),
+      };
+  }
+}
+
+/** Linear combination patches: each source × (each field | each mod | each material). */
+function combinationPatches(): NamedPatch[] {
+  const all = inlineCatalog.all();
+  const sources = all.filter((g) => roleOf(g.def) === 'source');
+  const fields = all.filter((g) => roleOf(g.def) === 'field');
+  const mods = all.filter((g) => {
+    const r = roleOf(g.def);
+    return r === 'mod_coord' || r === 'mod_value';
+  });
+  const materials = all.filter((g) => roleOf(g.def) === 'material');
+  const neon = requireGen('neon');
+
+  const out: NamedPatch[] = [];
+
+  for (const src of sources) {
+    for (const fld of fields) {
+      out.push({
+        label: `combo/source:${src.def.id}+field:${fld.def.id}+material:neon`,
+        patch: basePatch([
+          opFromDef('src0', src.def),
+          opFromDef('fld0', fld.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      });
+    }
+    for (const mod of mods) {
+      const r = roleOf(mod.def);
+      out.push({
+        label: `combo/source:${src.def.id}+${r}:${mod.def.id}+material:neon`,
+        patch: basePatch([
+          opFromDef('mod0', mod.def),
+          opFromDef('src0', src.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      });
+    }
+    for (const mat of materials) {
+      out.push({
+        label: `combo/source:${src.def.id}+material:${mat.def.id}`,
+        patch: basePatch([opFromDef('src0', src.def), opFromDef('mat0', mat.def)]),
+      });
+    }
+  }
+
+  return out;
+}
+
+function buildAllPatches(): NamedPatch[] {
+  const solos = inlineCatalog.all().map((g) => soloPatchFor(g.def.id));
+  return [...solos, ...combinationPatches()];
 }
 
 async function compileInBrowser(
@@ -89,7 +206,6 @@ async function compileInBrowser(
           const kind = type === g.VERTEX_SHADER ? 'vertex' : 'fragment';
           return `GLSL ${kind} shader compile failed:\n${log}\n--- source ---\n${src}`;
         }
-        // keep shader alive for link; return via side channel is awkward — store on gl temp
         (g as unknown as { __lastShader?: WebGLShader }).__lastShader = sh;
         return null;
       }
@@ -143,6 +259,9 @@ try {
   );
 }
 
+const ALL_PATCHES = buildAllPatches();
+const PATCH_COUNT = ALL_PATCHES.length;
+
 describe('synth/gl assemblePatch GPU compile', () => {
   if (!browser || !page) {
     it.skip(`browser unavailable — GPU compile tests skipped${
@@ -159,12 +278,38 @@ describe('synth/gl assemblePatch GPU compile', () => {
     await br.close().catch(() => {});
   });
 
-  it('default grid+noise+mirror+neon patch compiles and links', async () => {
-    const { fragSrc } = assemblePatch(defaultPatch(), inlineCatalog);
-    const result = await compileInBrowser(pg, FULLSCREEN_VERT, fragSrc);
-    if (!result.ok) {
-      throw new Error(result.log);
+  it(`compiles ${PATCH_COUNT} patches covering all generators`, async () => {
+    expect(PATCH_COUNT).toBeGreaterThan(0);
+    // catalog size sanity: 4 original + 12 new
+    expect(inlineCatalog.all().length).toBe(16);
+    console.log(`[compile.gpu.test] verifying ${PATCH_COUNT} patches`);
+
+    const failures: string[] = [];
+
+    for (const { label, patch } of ALL_PATCHES) {
+      let fragSrc: string;
+      try {
+        fragSrc = assemblePatch(patch, inlineCatalog).fragSrc;
+      } catch (e) {
+        failures.push(
+          `${label}: assemblePatch threw: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
+      const result = await compileInBrowser(pg, FULLSCREEN_VERT, fragSrc);
+      if (!result.ok) {
+        failures.push(`${label}:\n${result.log}`);
+      }
     }
-    expect(result.ok).toBe(true);
+
+    if (failures.length > 0) {
+      throw new Error(
+        `${failures.length}/${PATCH_COUNT} patch(es) failed GPU compile/link:\n\n` +
+          failures.join('\n\n==========\n\n'),
+      );
+    }
+
+    expect(failures.length).toBe(0);
+    console.log(`[compile.gpu.test] all ${PATCH_COUNT} patches compiled and linked`);
   });
 });
