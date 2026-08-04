@@ -352,7 +352,7 @@ export function App(): React.ReactElement {
         devices={devices}
         engine={engineRef.current}
         onToggleAudio={toggleAudio}
-        onRefreshDevices={refreshDevices}
+        onRefreshDevices={() => void refreshDevices()}
         onSelectDevice={selectDevice}
         onSetScene={setScene}
         onShiftScene={shiftScene}
