@@ -47,3 +47,36 @@ jobs:
       # 型チェックとビルドの両方をここで検証する
       - name: Build
         run: pnpm build
+
+      # vitest でユニットテストを実行する
+      - name: Test
+        run: pnpm test
+
+  gpu-test:
+    name: GPU parity test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # CI には nix が無いので Playwright 同梱 Chromium を入れる
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # CPU/GPU 乱数列の bit-exact 一致を検証する
+      - name: GPU parity test
+        run: pnpm test:gpu
