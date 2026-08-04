@@ -10,11 +10,15 @@
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "test": "vitest run",
+    "test:gpu": "vitest run src/synth/rng.gpu.test.ts",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
@@ -25,7 +29,9 @@
     "oxfmt": "^0.62.0",
     "oxlint": "^1.77.0",
     "oxlint-tsgolint": "^7.0.2001",
+    "playwright": "^1.62.1",
     "typescript": "^7.0.2",
-    "vite": "^8.2.0"
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
   }
 }
