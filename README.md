@@ -82,6 +82,20 @@ pnpm dev
 
 > シーンキーは GPU シーン追加に伴い **`1`〜`9`、`0`**（10 番目）に拡張されました。
 
+## Semantic Synth（生成シンセシーン・実験的）
+
+固定の描画ロジックを持つ 10 シーンとは別に、**seed から GLSL シェーダそのものを合成する実験的なシーン**「Semantic Synth」を搭載しています（`?scene=semantic-synth` で起動）。
+
+- Source / Field / Modifier / Material の 4 カテゴリ・計 16 種類の Generator の中から、seed に基づいて決定的に組み合わせを選び、GLSL を組み立てて描画します。あらかじめ用意された固定シーンではなく、**都度合成される「実験的な」シーン**です。
+- 選ばれる組み合わせは look gacha の **シードがそのまま効きます**。同じシードなら同じ Generator 構成・パラメータ・Look が常に再現されます。
+- シードを引き直す（🎲 / `R`）と、他のシーンと同様に**ハード切替ではなくクロスフェード**で新しい Look へ滑らかに遷移します。
+- bass / mid / treble / level などの音声解析結果が Patch 内のパラメータを変調し、他の GPU シーンと同様に音楽にゆったり反応します。
+- 負荷が高い環境ではフレーム時間を監視し、**内部レンダリング解像度を自動的に段階的に下げて**フレームレートを維持します（余裕が戻れば解像度も自動的に戻ります）。
+
+### Timeline パネル
+
+画面右側の **Timeline パネル**では、数秒〜数小節先の演出イベント（シード変更やトランジションなど）をあらかじめ予約でき、演出の流れを JSON として記録・再生できます。詳細は Issue #3 の RFC を参照してください。
+
 ## テンポ同期（BPM 検出）
 
 入力音声からリアルタイムに BPM を推定し、ビートグリッドを生成して各シーンのパルスやオートサイクルを音楽の拍に合わせます。パネルの **Tempo** セクションに現在の BPM とステータスチップ、拍位置を示す 4 つのドット（1 拍目＝ダウンビートを強調）が表示されます。
@@ -103,7 +117,7 @@ pnpm dev
 
 | パラメータ | 例 | 説明 |
 | --- | --- | --- |
-| `scene` | `scene=aurora` | 起動時のシーン id（2D: `bars` `waveform` `particles` `radial` `rings` `lissajous` / GPU: `fluid` `smoke` `lava` `aurora`） |
+| `scene` | `scene=aurora` | 起動時のシーン id（2D: `bars` `waveform` `particles` `radial` `rings` `lissajous` / GPU: `fluid` `smoke` `lava` `aurora` `semantic-synth`） |
 | `bg` | `bg=transparent` | 背景（`black` / `transparent`） |
 | `ui` | `ui=hide` | コントロールパネルを最初から非表示にする（OBS 用） |
 | `gain` | `gain=2` | 入力ゲイン（0.5 – 4） |
