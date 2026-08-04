@@ -9,11 +9,12 @@ import { fluidScene } from './fluid';
 import { smokeScene } from './smoke';
 import { lavaScene } from './lava';
 import { auroraScene } from './aurora';
+import { semanticSynthScene } from './semanticSynth';
 
 /**
  * Ordered scene registry. The index here maps to keyboard keys 1–9, 0 (=10th).
  * The six Canvas-2D scenes come first, then the WebGL2 "rich" scenes
- * (fluid, smoke, lava, aurora).
+ * (fluid, smoke, lava, aurora), then semantic-synth (Phase 1).
  */
 export const scenes: Scene[] = [
   barsScene,
@@ -26,6 +27,7 @@ export const scenes: Scene[] = [
   smokeScene,
   lavaScene,
   auroraScene,
+  semanticSynthScene,
 ];
 
 export function sceneIndexById(id: string): number {
