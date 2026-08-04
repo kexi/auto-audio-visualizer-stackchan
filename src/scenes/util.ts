@@ -16,6 +16,15 @@ export function lerp(current: number, target: number, factor: number): number {
   return current + (target - current) * factor;
 }
 
+/**
+ * Frame-rate-independent exponential smoothing blend factor for a time
+ * constant `tau` seconds, typically fed into {@link lerp} as its `factor`.
+ * `k = 1 - exp(-dt / max(0.0001, tau))`.
+ */
+export function smoothK(dt: number, tau: number): number {
+  return 1 - Math.exp(-dt / Math.max(0.0001, tau));
+}
+
 /** Wrap a hue into 0..360. */
 export function wrapHue(h: number): number {
   return ((h % 360) + 360) % 360;

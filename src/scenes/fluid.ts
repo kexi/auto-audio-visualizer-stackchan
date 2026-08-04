@@ -13,7 +13,7 @@ import {
   type PingPong,
 } from '../render/glutil';
 import type { Variation } from '../variation/types';
-import { beatPulse, clamp, clamp01, hslToRgb, lerp, spreadHue } from './util';
+import { beatPulse, clamp, clamp01, hslToRgb, lerp, smoothK, spreadHue } from './util';
 
 /**
  * Fluid Ink — ink marbling in water via a real GPU fluid simulation
@@ -452,10 +452,6 @@ const dyePosRad = new Float32Array(MAX_SPLATS * 4);
 const dyeVal = new Float32Array(MAX_SPLATS * 4);
 let fCount = 0;
 let dCount = 0;
-
-function smoothK(dt: number, tau: number): number {
-  return 1 - Math.exp(-dt / Math.max(0.0001, tau));
-}
 
 // ---- GPU resource management -----------------------------------------------
 

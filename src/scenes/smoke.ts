@@ -6,7 +6,7 @@ import {
   FULLSCREEN_VERT,
   Uniforms,
 } from '../render/glutil';
-import { hslToRgb, spreadHue, clamp01, lerp } from './util';
+import { hslToRgb, spreadHue, clamp01, lerp, smoothK } from './util';
 
 /**
  * Smoke — volumetric-looking fog from domain-warped FBM. A single fullscreen
@@ -160,11 +160,6 @@ let sTreble = 0;
 // Preallocated colour buffers (no per-frame allocation in draw).
 const cBase: [number, number, number] = [0, 0, 0];
 const cHi: [number, number, number] = [0, 0, 0];
-
-/** Frame-rate-independent smoothing factor for a time constant `tau` seconds. */
-function smoothK(dt: number, tau: number): number {
-  return 1 - Math.exp(-dt / Math.max(0.0001, tau));
-}
 
 export const smokeScene: GlScene = {
   kind: 'gl',

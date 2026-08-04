@@ -287,7 +287,7 @@ export const semanticSynthScene: GlScene = {
   },
 
   draw(s: GlSceneContext) {
-    const { gl, pxW, pxH, t, dt, audio, va } = s;
+    const { gl, pxW, pxH, t, dt, audio, hue, va } = s;
     if (!vao) return;
 
     ensurePatch(gl, va.seed);
@@ -329,7 +329,10 @@ export const semanticSynthScene: GlScene = {
       if (!paramDef) continue;
       const key = `${opId}.${paramId}`;
       const raw = values.get(key) ?? op.parameters[paramId] ?? paramDef.default;
-      setParamUniform(gl, uni, name, paramDef.kind, raw, paramDef.options);
+      // Patch の hue を絶対値ではなくレンダラ hue からのオフセットとして扱う。
+      // hue サイクルと固定 hue の UI をこのシーンでも効かせるため。
+      const value = paramId === 'hue' && typeof raw === 'number' ? (raw + hue) % 360 : raw;
+      setParamUniform(gl, uni, name, paramDef.kind, value, paramDef.options);
     }
 
     drawFullscreen(gl, vao);

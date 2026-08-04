@@ -79,7 +79,12 @@ float ${fnName}(vec2 p) {
     q.x -= 0.45;
     w *= 0.72;
   }
-  return 1.0 - smoothstep(0.0, max(th * 2.0, 1e-4), max(d, 0.0));
+  // Resolution-independent AA: soft falloff stays ≥ ~0.75px so thin twigs survive low res.
+  float md = max(d, 0.0);
+  float px = fwidth(d);
+  float soft = max(th * 2.0, 1e-4);
+  float edgeW = max(soft, px * 0.75);
+  return 1.0 - smoothstep(edgeW - px, edgeW + px, md);
 }
 `.trim();
   },

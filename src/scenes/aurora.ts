@@ -6,7 +6,7 @@ import {
   FULLSCREEN_VERT,
   Uniforms,
 } from '../render/glutil';
-import { hslToRgb, spreadHue, clamp01, lerp } from './util';
+import { hslToRgb, spreadHue, clamp01, lerp, smoothK } from './util';
 
 /**
  * Aurora — aurora curtains / nebula. Layered sinusoidal bands, vertically
@@ -167,10 +167,6 @@ let sLevel = 0;
 const cA: [number, number, number] = [0, 0, 0];
 const cB: [number, number, number] = [0, 0, 0];
 const cC: [number, number, number] = [0, 0, 0];
-
-function smoothK(dt: number, tau: number): number {
-  return 1 - Math.exp(-dt / Math.max(0.0001, tau));
-}
 
 export const auroraScene: GlScene = {
   kind: 'gl',

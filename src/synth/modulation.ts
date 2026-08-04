@@ -54,6 +54,9 @@ export class UnknownModulationSourceError extends Error {
 /**
  * 指数平滑のブレンド係数。シーン側 `smoothK` と同じ形:
  * `k = 1 - exp(-dt / max(eps, tau))`
+ *
+ * scenes/util.ts の `smoothK` と同型。synth 層から scenes 層への依存を
+ * 避けるため、ここで重複定義している。
  */
 export function smoothK(dt: number, tau: number): number {
   return 1 - Math.exp(-dt / Math.max(TAU_EPS, tau));
