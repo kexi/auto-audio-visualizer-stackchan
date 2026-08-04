@@ -12,7 +12,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "test": "vitest run",
-    "test:gpu": "vitest run src/synth/rng.gpu.test.ts",
+    "test:gpu": "vitest run gpu.test",
     "test:watch": "vitest"
   },
   "dependencies": {

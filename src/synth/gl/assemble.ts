@@ -1,0 +1,222 @@
+import type {
+  GeneratorDefinition,
+  ParameterDefinition,
+  VisualOperator,
+  VisualPatch,
+} from '../types';
+import type { InlineGenerator, InlineGeneratorCatalog } from '../generators/types';
+import { RNG_GLSL } from '../rng.glsl';
+
+export const SEED_UNIFORM = 'uSeed';
+
+/** Sanitize opId so the result is a valid GLSL identifier fragment. */
+export function sanitizeId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_]/g, '_');
+}
+
+export function uniformName(opId: string, paramId: string): string {
+  return `u_${sanitizeId(opId)}_${paramId}`;
+}
+
+export function nsUniformName(opId: string): string {
+  return `uNs_${sanitizeId(opId)}`;
+}
+
+export interface AssembledShader {
+  fragSrc: string;
+  uniforms: Array<{ opId: string; paramId: string; name: string }>;
+  nsUniforms: Array<{ opId: string; name: string }>;
+}
+
+/** Role used for fn naming and main() stage ordering. */
+type OpRole = 'source' | 'field' | 'mod_coord' | 'mod_value' | 'material';
+
+interface ResolvedOp {
+  op: VisualOperator;
+  gen: InlineGenerator;
+  def: GeneratorDefinition;
+  role: OpRole;
+  fnName: string;
+  nsName: string;
+}
+
+function roleOf(def: GeneratorDefinition): OpRole {
+  if (def.category === 'source') return 'source';
+  if (def.category === 'field') return 'field';
+  if (def.category === 'material') return 'material';
+  // modifier: vector = coord transform, field = value transform
+  if (def.category === 'modifier') {
+    if (def.output === 'vector') return 'mod_coord';
+    if (def.output === 'field') return 'mod_value';
+  }
+  throw new Error(
+    `Cannot classify generator "${def.id}" (category=${def.category}, output=${def.output}) for assembly`,
+  );
+}
+
+function glslUniformType(param: ParameterDefinition): string {
+  switch (param.kind) {
+    case 'number':
+      return 'float';
+    case 'int':
+    case 'bool':
+    case 'enum':
+      return 'int';
+    default: {
+      const _exhaustive: never = param.kind;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * Assemble a VisualPatch into a single fullscreen fragment shader.
+ *
+ * Deterministic: same Patch + catalog → same fragSrc always.
+ * Operator order is patch.operators array order; stages in main() follow:
+ *   coord modifiers → fields (* amount) → sources (max) → value modifiers → material
+ */
+export function assemblePatch(
+  patch: VisualPatch,
+  catalog: InlineGeneratorCatalog,
+): AssembledShader {
+  const uniforms: AssembledShader['uniforms'] = [];
+  const nsUniforms: AssembledShader['nsUniforms'] = [];
+
+  // Resolve operators in stable order (patch.operators appearance order).
+  const resolved: ResolvedOp[] = [];
+  const roleCounts: Record<OpRole, number> = {
+    source: 0,
+    field: 0,
+    mod_coord: 0,
+    mod_value: 0,
+    material: 0,
+  };
+
+  for (const op of patch.operators) {
+    const gen = catalog.get(op.generatorId);
+    if (!gen) {
+      throw new Error(`assemblePatch: generator "${op.generatorId}" not found in catalog`);
+    }
+    if (gen.def.impl !== 'inline') {
+      throw new Error(
+        `assemblePatch: generator "${op.generatorId}" impl is "${gen.def.impl}", expected "inline"`,
+      );
+    }
+    const role = roleOf(gen.def);
+    const idx = roleCounts[role]++;
+    const fnName = `${role}_${idx}`;
+    const nsName = nsUniformName(op.id);
+    resolved.push({ op, gen, def: gen.def, role, fnName, nsName });
+    nsUniforms.push({ opId: op.id, name: nsName });
+    for (const param of gen.def.parameters) {
+      uniforms.push({
+        opId: op.id,
+        paramId: param.id,
+        name: uniformName(op.id, param.id),
+      });
+    }
+  }
+
+  const lines: string[] = [];
+
+  // ---- header ----
+  lines.push('#version 300 es');
+  lines.push('precision highp float;');
+  lines.push('precision highp int;');
+  lines.push('');
+  lines.push(RNG_GLSL.trim());
+  lines.push('');
+  lines.push('in vec2 vUv;');
+  lines.push('out vec4 fragColor;');
+  lines.push('uniform vec2 uRes;');
+  lines.push('uniform float uTime;');
+  lines.push('uniform float uBass, uMid, uTreble, uLevel, uBeat;');
+  lines.push(`uniform uint ${SEED_UNIFORM};`);
+  lines.push('');
+
+  // ---- param + ns uniforms (operators array order, params in definition order) ----
+  lines.push('// --- operator uniforms ---');
+  for (const r of resolved) {
+    for (const param of r.def.parameters) {
+      const name = uniformName(r.op.id, param.id);
+      lines.push(`uniform ${glslUniformType(param)} ${name};`);
+    }
+    lines.push(`uniform uint ${r.nsName};`);
+  }
+  lines.push('');
+
+  // ---- emitted generator functions (operators array order) ----
+  lines.push('// --- generator functions ---');
+  for (const r of resolved) {
+    const body = r.gen.emit({
+      fnName: r.fnName,
+      uniform: (paramId: string) => uniformName(r.op.id, paramId),
+      nsUniform: r.nsName,
+      seedUniform: SEED_UNIFORM,
+    });
+    lines.push(body);
+    lines.push('');
+  }
+
+  // ---- main: strict pipeline stages ----
+  const coordMods = resolved.filter((r) => r.role === 'mod_coord');
+  const fields = resolved.filter((r) => r.role === 'field');
+  const sources = resolved.filter((r) => r.role === 'source');
+  const valueMods = resolved.filter((r) => r.role === 'mod_value');
+  const materials = resolved.filter((r) => r.role === 'material');
+
+  lines.push('void main() {');
+  lines.push('  // aspect-corrected, origin-centered coords');
+  lines.push('  vec2 uv = vUv;');
+  lines.push('  float aspect = uRes.x / uRes.y;');
+  lines.push('  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);');
+  lines.push('');
+
+  lines.push('  // 1. coord modifiers (modifier + output:vector) in patch order');
+  for (const r of coordMods) {
+    lines.push(`  p = ${r.fnName}(p);`);
+  }
+  lines.push('');
+
+  lines.push('  // 2. fields — displacement always scaled by amount uniform');
+  for (const r of fields) {
+    const hasAmount = r.def.parameters.some((p) => p.id === 'amount');
+    if (hasAmount) {
+      lines.push(`  p += ${r.fnName}(p) * ${uniformName(r.op.id, 'amount')};`);
+    } else {
+      lines.push(`  p += ${r.fnName}(p) * 1.0;`);
+    }
+  }
+  lines.push('');
+
+  lines.push('  // 3. sources combined with max');
+  lines.push('  float v = 0.0;');
+  for (const r of sources) {
+    lines.push(`  v = max(v, ${r.fnName}(p));`);
+  }
+  lines.push('');
+
+  lines.push('  // 4. value modifiers (modifier + output:field) in patch order');
+  for (const r of valueMods) {
+    lines.push(`  v = ${r.fnName}(v, p);`);
+  }
+  lines.push('');
+
+  lines.push('  // 5. material(s) — last wins if multiple');
+  if (materials.length === 0) {
+    lines.push('  fragColor = vec4(v, v, v, 1.0);');
+  } else {
+    for (const r of materials) {
+      lines.push(`  fragColor = ${r.fnName}(v, p);`);
+    }
+  }
+  lines.push('}');
+  lines.push('');
+
+  return {
+    fragSrc: lines.join('\n'),
+    uniforms,
+    nsUniforms,
+  };
+}
