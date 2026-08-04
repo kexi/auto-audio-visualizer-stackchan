@@ -4,12 +4,12 @@ import { clamp, clamp01, lerp, hsla, idlePulse, spreadHue, beatTrigger } from '.
 interface Particle {
   x: number;
   y: number;
-  px: number;       // previous x for streak drawing
-  py: number;       // previous y for streak drawing
+  px: number; // previous x for streak drawing
+  py: number; // previous y for streak drawing
   vx: number;
   vy: number;
-  life: number;     // 0..1, decreases over time
-  maxLife: number;  // seconds
+  life: number; // 0..1, decreases over time
+  maxLife: number; // seconds
   size: number;
   seedFrac: number; // stable per-particle random fraction from va.rand
   // Orbital variant fields
@@ -43,7 +43,13 @@ function makeBaseParticle(): Particle {
   };
 }
 
-function spawnRising(p: Particle, w: number, h: number, index: number, va: { rand: (i: number) => number }): void {
+function spawnRising(
+  p: Particle,
+  w: number,
+  h: number,
+  index: number,
+  va: { rand: (i: number) => number },
+): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
   p.x = Math.random() * w;
@@ -60,7 +66,13 @@ function spawnRising(p: Particle, w: number, h: number, index: number, va: { ran
   p.orbitSpeed = 0;
 }
 
-function spawnRisingRadial(p: Particle, cx: number, cy: number, index: number, va: { rand: (i: number) => number }): void {
+function spawnRisingRadial(
+  p: Particle,
+  cx: number,
+  cy: number,
+  index: number,
+  va: { rand: (i: number) => number },
+): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
   const angle = Math.random() * Math.PI * 2;
@@ -79,7 +91,13 @@ function spawnRisingRadial(p: Particle, cx: number, cy: number, index: number, v
   p.orbitSpeed = 0;
 }
 
-function spawnOrbital(p: Particle, cx: number, cy: number, index: number, va: { rand: (i: number) => number; scale: number }): void {
+function spawnOrbital(
+  p: Particle,
+  cx: number,
+  cy: number,
+  index: number,
+  va: { rand: (i: number) => number; scale: number },
+): void {
   const r0 = va.rand(index * 3);
   const r1 = va.rand(index * 3 + 1);
   const r2 = va.rand(index * 3 + 2);
@@ -100,7 +118,12 @@ function spawnOrbital(p: Particle, cx: number, cy: number, index: number, va: { 
   p.size = 1.5 + Math.random() * 3;
 }
 
-function spawnRain(p: Particle, w: number, index: number, va: { rand: (i: number) => number; scale: number; speed: number }): void {
+function spawnRain(
+  p: Particle,
+  w: number,
+  index: number,
+  va: { rand: (i: number) => number; scale: number; speed: number },
+): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
   p.x = Math.random() * w;
@@ -117,7 +140,13 @@ function spawnRain(p: Particle, w: number, index: number, va: { rand: (i: number
   p.orbitSpeed = 0;
 }
 
-function spawnStarfield(p: Particle, cx: number, cy: number, index: number, va: { rand: (i: number) => number }): void {
+function spawnStarfield(
+  p: Particle,
+  cx: number,
+  cy: number,
+  index: number,
+  va: { rand: (i: number) => number },
+): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
   // Start near center with a direction angle
@@ -282,7 +311,7 @@ export const particlesScene: Scene2D = {
         const dir = va.direction;
         p.orbitAngle += p.orbitSpeed * s.dt * dir;
         // Decay impulse back to base radius (soft spring)
-        const baseR = (va.rand(i * 3) * (Math.min(cx, cy) * 0.75)) * va.scale;
+        const baseR = va.rand(i * 3) * (Math.min(cx, cy) * 0.75) * va.scale;
         p.orbitR = lerp(p.orbitR, baseR, 0.02);
         p.x = cx + Math.cos(p.orbitAngle) * p.orbitR;
         p.y = cy + Math.sin(p.orbitAngle) * p.orbitR;
@@ -313,7 +342,7 @@ export const particlesScene: Scene2D = {
         }
       }
 
-      const alpha = clamp01(p.life * (running ? (0.5 + level * 0.6) : 0.3));
+      const alpha = clamp01(p.life * (running ? 0.5 + level * 0.6 : 0.3));
       const pHue = spreadHue(va, s.hue, p.seedFrac, Math.round(p.seedFrac * 100));
       const sz = clamp(p.size * va.scale * clamp01(p.life * 2), 0.5, 30);
 

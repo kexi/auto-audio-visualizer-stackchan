@@ -303,7 +303,7 @@ export const radialScene: Scene2D = {
     }
 
     // Inner ring — for ALL variants
-    const ringAlpha = running ? (0.5 + smoothBeat * 0.5) : (0.25 + idlePulse(t, 0.5) * 0.15);
+    const ringAlpha = running ? 0.5 + smoothBeat * 0.5 : 0.25 + idlePulse(t, 0.5) * 0.15;
     const ringWidth = 1.5 + smoothBeat * 4;
     const ringHue = spreadHue(va, hue, 0, 0);
 

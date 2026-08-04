@@ -317,8 +317,7 @@ export function App(): React.ReactElement {
         case 'b':
         case 'B':
           update({
-            background:
-              settingsRef.current.background === 'black' ? 'transparent' : 'black',
+            background: settingsRef.current.background === 'black' ? 'transparent' : 'black',
           });
           break;
         case 'r':

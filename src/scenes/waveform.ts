@@ -23,8 +23,10 @@ function buildPoints(
   if (!running) {
     for (let i = 0; i < count; i++) {
       const nx = i / (count - 1);
-      const y = cy + Math.sin(nx * Math.PI * 4 + t * 0.8) * amplitude * 0.18 +
-                     Math.sin(nx * Math.PI * 7 + t * 0.5) * amplitude * 0.06;
+      const y =
+        cy +
+        Math.sin(nx * Math.PI * 4 + t * 0.8) * amplitude * 0.18 +
+        Math.sin(nx * Math.PI * 7 + t * 0.5) * amplitude * 0.06;
       pts.push({ x: nx * w, y });
     }
     return pts;
@@ -72,12 +74,12 @@ function drawVariant0(
   drawGlowLine(ctx, ghostPts, ghostColor, 2, baseAlpha * 0.6);
 
   const mainColor = hsla(hue, 90, brightness, 1);
-  const midColor  = hsla(hue + 10, 95, brightness + 8, 1);
+  const midColor = hsla(hue + 10, 95, brightness + 8, 1);
   const coreColor = hsla(hue + 5, 100, 96, 1);
 
   drawGlowLine(ctx, pts, mainColor, 12, baseAlpha * 0.18);
-  drawGlowLine(ctx, pts, mainColor, 6,  baseAlpha * 0.45);
-  drawGlowLine(ctx, pts, midColor,  3,  baseAlpha * 0.75);
+  drawGlowLine(ctx, pts, mainColor, 6, baseAlpha * 0.45);
+  drawGlowLine(ctx, pts, midColor, 3, baseAlpha * 0.75);
   drawGlowLine(ctx, pts, coreColor, 1.2, Math.min(1, baseAlpha * 1.2));
 }
 
@@ -95,14 +97,20 @@ function drawVariant1Stacked(
 
   for (let li = 0; li < symmetry; li++) {
     const frac = symmetry > 1 ? li / (symmetry - 1) : 0;
-    const cy_i = (li + 0.5) / symmetry * h;
+    const cy_i = ((li + 0.5) / symmetry) * h;
     const lineHue = spreadHue(va, s.hue, frac, li);
     const amplitude = clamp01(0.2 + smoothedLevel * 0.7) * (h / symmetry) * 0.38 * va.scale;
     const pts = buildPoints(wave, w, cy_i, amplitude, running, t, wobbleAmtFn);
 
     drawGlowLine(ctx, pts, hsla(lineHue, va.saturation, brightness, 1), 12, baseAlpha * 0.18);
     drawGlowLine(ctx, pts, hsla(lineHue, va.saturation, brightness, 1), 6, baseAlpha * 0.45);
-    drawGlowLine(ctx, pts, hsla(lineHue + 10, va.saturation, brightness + 8, 1), 3, baseAlpha * 0.75);
+    drawGlowLine(
+      ctx,
+      pts,
+      hsla(lineHue + 10, va.saturation, brightness + 8, 1),
+      3,
+      baseAlpha * 0.75,
+    );
     drawGlowLine(ctx, pts, hsla(lineHue + 5, 100, 96, 1), 1.2, Math.min(1, baseAlpha * 1.2));
   }
 }
@@ -125,15 +133,18 @@ function drawVariant2Circular(
   const radius = baseR + bassBoost;
   const amplitude = clamp01(0.2 + smoothedLevel * 0.7) * radius * 0.5;
 
-  interface PolarPoint { x: number; y: number; }
+  interface PolarPoint {
+    x: number;
+    y: number;
+  }
   const circlePts: PolarPoint[] = [];
 
   if (!running) {
     for (let i = 0; i <= count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const nx = i / count;
-      const v = Math.sin(nx * Math.PI * 4 + t * 0.8) * 0.18 +
-                Math.sin(nx * Math.PI * 7 + t * 0.5) * 0.06;
+      const v =
+        Math.sin(nx * Math.PI * 4 + t * 0.8) * 0.18 + Math.sin(nx * Math.PI * 7 + t * 0.5) * 0.06;
       const r = radius + v * amplitude;
       circlePts.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
     }
@@ -191,14 +202,18 @@ function drawVariant3VerticalMirrored(
   const amplitude = clamp01(0.2 + smoothedLevel * 0.7) * cx * 0.6 * va.scale;
 
   // Build points along vertical axis: y goes top to bottom, x is the amplitude offset
-  interface VP { lx: number; rx: number; y: number; }
+  interface VP {
+    lx: number;
+    rx: number;
+    y: number;
+  }
   const vPts: VP[] = [];
 
   if (!running) {
     for (let i = 0; i < count; i++) {
       const ny = i / (count - 1);
-      const v = Math.sin(ny * Math.PI * 4 + t * 0.8) * 0.18 +
-                Math.sin(ny * Math.PI * 7 + t * 0.5) * 0.06;
+      const v =
+        Math.sin(ny * Math.PI * 4 + t * 0.8) * 0.18 + Math.sin(ny * Math.PI * 7 + t * 0.5) * 0.06;
       const xOffset = v * amplitude;
       const y = ny * h;
       vPts.push({ lx: cx - xOffset, rx: cx + xOffset, y });
@@ -216,21 +231,33 @@ function drawVariant3VerticalMirrored(
   }
 
   // Draw left line
-  const leftPts: WavePoint[] = vPts.map(p => ({ x: p.lx, y: p.y }));
+  const leftPts: WavePoint[] = vPts.map((p) => ({ x: p.lx, y: p.y }));
   // Draw right line
-  const rightPts: WavePoint[] = vPts.map(p => ({ x: p.rx, y: p.y }));
+  const rightPts: WavePoint[] = vPts.map((p) => ({ x: p.rx, y: p.y }));
 
   const hueL = spreadHue(va, s.hue, 0, 0);
   const hueR = spreadHue(va, s.hue, 1, 1);
 
   drawGlowLine(ctx, leftPts, hsla(hueL, va.saturation, brightness, 1), 12, baseAlpha * 0.18);
   drawGlowLine(ctx, leftPts, hsla(hueL, va.saturation, brightness, 1), 6, baseAlpha * 0.45);
-  drawGlowLine(ctx, leftPts, hsla(hueL + 10, va.saturation, brightness + 8, 1), 3, baseAlpha * 0.75);
+  drawGlowLine(
+    ctx,
+    leftPts,
+    hsla(hueL + 10, va.saturation, brightness + 8, 1),
+    3,
+    baseAlpha * 0.75,
+  );
   drawGlowLine(ctx, leftPts, hsla(hueL + 5, 100, 96, 1), 1.2, Math.min(1, baseAlpha * 1.2));
 
   drawGlowLine(ctx, rightPts, hsla(hueR, va.saturation, brightness, 1), 12, baseAlpha * 0.18);
   drawGlowLine(ctx, rightPts, hsla(hueR, va.saturation, brightness, 1), 6, baseAlpha * 0.45);
-  drawGlowLine(ctx, rightPts, hsla(hueR + 10, va.saturation, brightness + 8, 1), 3, baseAlpha * 0.75);
+  drawGlowLine(
+    ctx,
+    rightPts,
+    hsla(hueR + 10, va.saturation, brightness + 8, 1),
+    3,
+    baseAlpha * 0.75,
+  );
   drawGlowLine(ctx, rightPts, hsla(hueR + 5, 100, 96, 1), 1.2, Math.min(1, baseAlpha * 1.2));
 }
 
@@ -270,7 +297,15 @@ export const waveformScene: Scene2D = {
     if (variant === 0) {
       const pts = buildPoints(wave, w, cy, amplitude, running, t, wobbleAmtFn);
       const ghostCy = cy + h * 0.06;
-      const ghostPts = buildPoints(wave, w, ghostCy, amplitude * 0.6, running, t + 0.3, wobbleAmtFn);
+      const ghostPts = buildPoints(
+        wave,
+        w,
+        ghostCy,
+        amplitude * 0.6,
+        running,
+        t + 0.3,
+        wobbleAmtFn,
+      );
       drawVariant0(ctx, pts, ghostPts, s.hue, baseAlpha, brightness);
     } else if (variant === 1) {
       drawVariant1Stacked(ctx, s, smoothLevel, baseAlpha, brightness, wobbleAmtFn);

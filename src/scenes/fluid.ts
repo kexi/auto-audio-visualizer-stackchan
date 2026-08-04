@@ -391,11 +391,11 @@ interface Passes {
 }
 
 interface Targets {
-  velocity: PingPong;   // RG16F, sim res
-  dye: PingPong;        // RGBA16F, dye res
-  pressure: PingPong;   // R16F, sim res
-  divergence: Fbo;      // R16F, sim res
-  curl: Fbo;            // R16F, sim res
+  velocity: PingPong; // RG16F, sim res
+  dye: PingPong; // RGBA16F, dye res
+  pressure: PingPong; // R16F, sim res
+  divergence: Fbo; // R16F, sim res
+  curl: Fbo; // R16F, sim res
   simW: number;
   simH: number;
   dyeW: number;
@@ -526,10 +526,14 @@ function clearTargets(gl: WebGL2RenderingContext): void {
   if (!tg) return;
   gl.clearColor(0, 0, 0, 0);
   const fbos = [
-    tg.velocity.read, tg.velocity.write,
-    tg.dye.read, tg.dye.write,
-    tg.pressure.read, tg.pressure.write,
-    tg.divergence, tg.curl,
+    tg.velocity.read,
+    tg.velocity.write,
+    tg.dye.read,
+    tg.dye.write,
+    tg.pressure.read,
+    tg.pressure.write,
+    tg.divergence,
+    tg.curl,
   ];
   for (const f of fbos) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
@@ -856,12 +860,7 @@ export const fluidScene: GlScene = {
       Math.min(80, va.lightness + 10),
       cPal1,
     );
-    hslToRgb(
-      spreadHue(va, hue, 1, 2),
-      va.saturation,
-      Math.min(84, va.lightness + 18),
-      cPal2,
-    );
+    hslToRgb(spreadHue(va, hue, 1, 2), va.saturation, Math.min(84, va.lightness + 18), cPal2);
 
     const pulse = clamp01(beatPulse(audio));
 

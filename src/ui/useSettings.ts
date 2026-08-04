@@ -100,8 +100,7 @@ function readUrl(): UrlConfig {
     if (gain != null) overrides.gain = clampNum(parseFloat(gain), 0.5, 4, 1.5);
 
     const cycle = p.get('cycle');
-    if (cycle != null)
-      overrides.cycleSeconds = clampNum(parseFloat(cycle), 2, 600, 30);
+    if (cycle != null) overrides.cycleSeconds = clampNum(parseFloat(cycle), 2, 600, 30);
 
     const hue = p.get('hue');
     if (hue != null) {

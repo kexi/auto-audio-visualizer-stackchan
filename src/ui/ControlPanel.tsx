@@ -107,8 +107,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     let beatLatched = false;
     const id = window.setInterval(() => {
       const f = engine.peekFrame();
-      const fired =
-        (f.tempoLocked ? f.gridBeat : f.beat) || f.beatIntensity > 0.35;
+      const fired = (f.tempoLocked ? f.gridBeat : f.beat) || f.beatIntensity > 0.35;
       if (fired && !beatLatched) {
         beatLatched = true;
         window.clearTimeout(beatClearRef.current);
@@ -185,11 +184,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
             <span className="bpm-unit">BPM</span>
           </span>
           <span className={`tempo-chip ${meter.status}`}>
-            {meter.status === 'tap'
-              ? 'TAP'
-              : meter.status === 'lock'
-                ? 'LOCK'
-                : 'SEARCH…'}
+            {meter.status === 'tap' ? 'TAP' : meter.status === 'lock' ? 'LOCK' : 'SEARCH…'}
           </span>
         </div>
         <div className="beat-dots" aria-label="beat position">
@@ -203,12 +198,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           ))}
         </div>
         <div className="btn-row tempo-buttons">
-          <button
-            type="button"
-            className="btn tap"
-            onClick={onTap}
-            title="Tap tempo (T)"
-          >
+          <button type="button" className="btn tap" onClick={onTap} title="Tap tempo (T)">
             TAP
           </button>
           <button
@@ -227,12 +217,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           >
             ÷2
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={onTempoAuto}
-            title="Auto-detect tempo"
-          >
+          <button type="button" className="btn" onClick={onTempoAuto} title="Auto-detect tempo">
             AUTO
           </button>
         </div>
@@ -310,10 +295,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           >
             ‹
           </button>
-          <select
-            value={settings.sceneId}
-            onChange={(e) => onSetScene(e.target.value)}
-          >
+          <select value={settings.sceneId} onChange={(e) => onSetScene(e.target.value)}>
             {scenes.map((s) => {
               const disabled = s.kind === 'gl' && !glAvailable;
               return (
@@ -491,16 +473,20 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
       </div>
 
       <div className="row">
-        <button type="button" className="btn" style={{ width: '100%' }} onClick={onToggleFullscreen}>
+        <button
+          type="button"
+          className="btn"
+          style={{ width: '100%' }}
+          onClick={onToggleFullscreen}
+        >
           ⛶ Fullscreen
         </button>
       </div>
 
       <div className="cheats">
         <kbd>1</kbd>–<kbd>9</kbd>,<kbd>0</kbd> scene · <kbd>←</kbd>
-        <kbd>→</kbd> prev/next · <kbd>H</kbd> panel · <kbd>F</kbd> fullscreen ·{' '}
-        <kbd>A</kbd> auto-cycle · <kbd>B</kbd> background · <kbd>R</kbd> reroll ·{' '}
-        <kbd>T</kbd> tap
+        <kbd>→</kbd> prev/next · <kbd>H</kbd> panel · <kbd>F</kbd> fullscreen · <kbd>A</kbd>{' '}
+        auto-cycle · <kbd>B</kbd> background · <kbd>R</kbd> reroll · <kbd>T</kbd> tap
       </div>
     </div>
   );

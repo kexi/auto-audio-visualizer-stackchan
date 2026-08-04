@@ -237,8 +237,18 @@ export const lavaScene: GlScene = {
 
     // Palette: three keys spanning the spread.
     const colLo = hslToRgb(hue, va.saturation, Math.max(20, va.lightness - 28), cLo);
-    const colHi = hslToRgb(spreadHue(va, hue, 1), va.saturation, Math.min(80, va.lightness + 14), cHi);
-    const colRim = hslToRgb(spreadHue(va, hue, 0.5, 1), va.saturation, Math.min(88, va.lightness + 28), cRim);
+    const colHi = hslToRgb(
+      spreadHue(va, hue, 1),
+      va.saturation,
+      Math.min(80, va.lightness + 14),
+      cHi,
+    );
+    const colRim = hslToRgb(
+      spreadHue(va, hue, 0.5, 1),
+      va.saturation,
+      Math.min(88, va.lightness + 28),
+      cRim,
+    );
 
     const pulse = audio.tempoLocked ? audio.gridPulse : audio.beatIntensity;
 

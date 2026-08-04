@@ -30,13 +30,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const PALETTE_MODES: PaletteMode[] = [
-  'mono',
-  'analogous',
-  'complementary',
-  'triadic',
-  'rainbow',
-];
+const PALETTE_MODES: PaletteMode[] = ['mono', 'analogous', 'complementary', 'triadic', 'rainbow'];
 
 /** Hue spread (degrees) each palette mode asks scenes to spread their elements across. */
 function hueSpreadFor(mode: PaletteMode): number {

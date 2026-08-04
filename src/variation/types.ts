@@ -1,10 +1,5 @@
 /** Colour-relationship mode that decides how scenes spread hue across elements. */
-export type PaletteMode =
-  | 'mono'
-  | 'analogous'
-  | 'complementary'
-  | 'triadic'
-  | 'rainbow';
+export type PaletteMode = 'mono' | 'analogous' | 'complementary' | 'triadic' | 'rainbow';
 
 /**
  * A deterministic bundle of "look" parameters derived from a seed string.
