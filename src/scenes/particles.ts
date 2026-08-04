@@ -1,5 +1,17 @@
+/**
+ * Particles scene.
+ *
+ * RNG policy: spawn-time draws use a named stream (`scene:particles:spawn`) via
+ * `stream.next()` so each init/respawn advances the counter and gets a fresh sample.
+ * Per-frame draws (turbulence, rain beat burst) use time-bucketed `rand(seed, ns, idx)`
+ * so values are a pure function of (seed, particleIndex, time) and not frame-rate
+ * dependent. Never use non-deterministic global RNG on the draw path. `va.rand`
+ * remains for stable per-slot values (seedFrac, orbital base radius, rain fall
+ * speed lerp target).
+ */
 import type { Scene2D, SceneContext } from './types';
 import { clamp, clamp01, lerp, hsla, idlePulse, spreadHue, beatTrigger } from './util';
+import { createRngStream, rand, type RngStream } from '../synth/rng';
 
 interface Particle {
   x: number;
@@ -24,6 +36,8 @@ let lastVariant = -1;
 let lastTargetCount = 0;
 // Module-level warp boost for starfield variant
 let warpTime = 0;
+let lastSeed = '';
+let spawnStream: RngStream = createRngStream('', 'scene:particles:spawn');
 
 function makeBaseParticle(): Particle {
   return {
@@ -52,15 +66,15 @@ function spawnRising(
 ): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
-  p.x = Math.random() * w;
+  p.x = spawnStream.next() * w;
   p.y = h + 10;
   p.px = p.x;
   p.py = p.y;
-  p.vx = (Math.random() - 0.5) * 0.4;
-  p.vy = -(0.3 + Math.random() * 0.5);
-  p.life = Math.random();
-  p.maxLife = 1.5 + Math.random() * 2.5;
-  p.size = (1.5 + Math.random() * 3) * 1;
+  p.vx = (spawnStream.next() - 0.5) * 0.4;
+  p.vy = -(0.3 + spawnStream.next() * 0.5);
+  p.life = spawnStream.next();
+  p.maxLife = 1.5 + spawnStream.next() * 2.5;
+  p.size = (1.5 + spawnStream.next() * 3) * 1;
   p.orbitR = 0;
   p.orbitAngle = 0;
   p.orbitSpeed = 0;
@@ -75,8 +89,8 @@ function spawnRisingRadial(
 ): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
-  const angle = Math.random() * Math.PI * 2;
-  const speed = 1.5 + Math.random() * 3;
+  const angle = spawnStream.next() * Math.PI * 2;
+  const speed = 1.5 + spawnStream.next() * 3;
   p.x = cx;
   p.y = cy;
   p.px = p.x;
@@ -84,8 +98,8 @@ function spawnRisingRadial(
   p.vx = Math.cos(angle) * speed;
   p.vy = Math.sin(angle) * speed;
   p.life = 1;
-  p.maxLife = 1.5 + Math.random() * 2.5;
-  p.size = 1.5 + Math.random() * 3;
+  p.maxLife = 1.5 + spawnStream.next() * 2.5;
+  p.size = 1.5 + spawnStream.next() * 3;
   p.orbitR = 0;
   p.orbitAngle = 0;
   p.orbitSpeed = 0;
@@ -115,7 +129,7 @@ function spawnOrbital(
   p.vy = 0;
   p.life = 1;
   p.maxLife = 999; // effectively immortal; reset by pool re-init
-  p.size = 1.5 + Math.random() * 3;
+  p.size = 1.5 + spawnStream.next() * 3;
 }
 
 function spawnRain(
@@ -126,15 +140,15 @@ function spawnRain(
 ): void {
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
-  p.x = Math.random() * w;
-  p.y = -(10 + Math.random() * 50);
+  p.x = spawnStream.next() * w;
+  p.y = -(10 + spawnStream.next() * 50);
   p.px = p.x;
   p.py = p.y;
-  p.vx = (Math.random() - 0.5) * 0.5;
-  p.vy = (2 + Math.random() * 3) * va.speed;
+  p.vx = (spawnStream.next() - 0.5) * 0.5;
+  p.vy = (2 + spawnStream.next() * 3) * va.speed;
   p.life = 1;
-  p.maxLife = 2 + Math.random() * 2;
-  p.size = (1 + Math.random() * 2) * va.scale;
+  p.maxLife = 2 + spawnStream.next() * 2;
+  p.size = (1 + spawnStream.next() * 2) * va.scale;
   p.orbitR = 0;
   p.orbitAngle = 0;
   p.orbitSpeed = 0;
@@ -150,17 +164,17 @@ function spawnStarfield(
   const seedFrac = va.rand(index);
   p.seedFrac = seedFrac;
   // Start near center with a direction angle
-  const angle = Math.random() * Math.PI * 2;
-  const startDist = 5 + Math.random() * 20;
+  const angle = spawnStream.next() * Math.PI * 2;
+  const startDist = 5 + spawnStream.next() * 20;
   p.x = cx + Math.cos(angle) * startDist;
   p.y = cy + Math.sin(angle) * startDist;
   p.px = p.x;
   p.py = p.y;
-  p.vx = Math.cos(angle) * (0.5 + Math.random() * 1.5);
-  p.vy = Math.sin(angle) * (0.5 + Math.random() * 1.5);
+  p.vx = Math.cos(angle) * (0.5 + spawnStream.next() * 1.5);
+  p.vy = Math.sin(angle) * (0.5 + spawnStream.next() * 1.5);
   p.life = 1;
-  p.maxLife = 2 + Math.random() * 2;
-  p.size = 1 + Math.random() * 2;
+  p.maxLife = 2 + spawnStream.next() * 2;
+  p.size = 1 + spawnStream.next() * 2;
   p.orbitR = 0;
   p.orbitAngle = 0;
   p.orbitSpeed = 0;
@@ -181,26 +195,26 @@ function initPool(
     const p = makeBaseParticle();
     if (variant === 0) {
       spawnRising(p, w, h, i, va);
-      p.x = Math.random() * w;
-      p.y = Math.random() * h;
-      p.life = Math.random();
+      p.x = spawnStream.next() * w;
+      p.y = spawnStream.next() * h;
+      p.life = spawnStream.next();
     } else if (variant === 1) {
       spawnOrbital(p, cx, cy, i, va);
-      p.orbitAngle = Math.random() * Math.PI * 2; // scatter initial angles
+      p.orbitAngle = spawnStream.next() * Math.PI * 2; // scatter initial angles
     } else if (variant === 2) {
       spawnRain(p, w, i, va);
       // Scatter initial positions
-      p.y = Math.random() * h;
+      p.y = spawnStream.next() * h;
     } else {
       spawnStarfield(p, cx, cy, i, va);
       // Scatter: start at random distance from center
-      const angle = Math.random() * Math.PI * 2;
-      const dist = Math.random() * Math.min(cx, cy);
+      const angle = spawnStream.next() * Math.PI * 2;
+      const dist = spawnStream.next() * Math.min(cx, cy);
       p.x = cx + Math.cos(angle) * dist;
       p.y = cy + Math.sin(angle) * dist;
       p.px = p.x;
       p.py = p.y;
-      p.life = Math.random();
+      p.life = spawnStream.next();
     }
     pool.push(p);
   }
@@ -218,12 +232,18 @@ export const particlesScene: Scene2D = {
     lastVariant = -1;
     lastTargetCount = 0;
     warpTime = 0;
+    lastSeed = '';
   },
 
   draw(s: SceneContext) {
     const { ctx, w, h, t, audio, va } = s;
     const { bass, level, running } = audio;
     const beat = beatTrigger(audio);
+
+    if (va.seed !== lastSeed) {
+      lastSeed = va.seed;
+      spawnStream = createRngStream(va.seed, 'scene:particles:spawn');
+    }
 
     const cx = w * 0.5;
     const cy = h * 0.5;
@@ -271,10 +291,13 @@ export const particlesScene: Scene2D = {
           p.orbitR += 20;
         }
       } else if (variant === 2) {
-        // Rain: upward burst for some particles
-        for (const p of pool) {
-          if (Math.random() < 0.3) {
-            p.vy = -(5 + Math.random() * 5);
+        // Rain: upward burst for some particles (time-bucketed, not stream.next)
+        const timeBucket = Math.floor(t * 30); // ~30Hz; same t => same values
+        for (let pi = 0; pi < pool.length; pi++) {
+          const p = pool[pi]!;
+          const base = (pi * 0x9e3779b1 + timeBucket) >>> 0;
+          if (rand(va.seed, 'scene:particles:rainBurst', base) < 0.3) {
+            p.vy = -(5 + rand(va.seed, 'scene:particles:rainBurst', (base ^ 0x9e3779b9) >>> 0) * 5);
           }
         }
       } else {
@@ -294,9 +317,18 @@ export const particlesScene: Scene2D = {
       p.py = p.y;
 
       if (variant === 0) {
-        // Rising drift
-        const turbX = running ? (Math.random() - 0.5) * 0.3 * smoothBass : 0;
-        const turbY = running ? (Math.random() - 0.5) * 0.3 * smoothBass : 0;
+        // Rising drift — per-frame turbulence is time-bucketed rand so it is
+        // frame-rate independent (same t => same values; not stream.next).
+        const timeBucket = Math.floor(t * 30); // ~30Hz
+        const idx = (i * 0x9e3779b1 + timeBucket) >>> 0;
+        const turbX = running
+          ? (rand(va.seed, 'scene:particles:turbulence', idx) - 0.5) * 0.3 * smoothBass
+          : 0;
+        const turbY = running
+          ? (rand(va.seed, 'scene:particles:turbulence', (idx ^ 0x9e3779b9) >>> 0) - 0.5) *
+            0.3 *
+            smoothBass
+          : 0;
         p.vx = lerp(p.vx, turbX, 0.05);
         p.vy += turbY * s.dt * 60;
         p.x += p.vx * speedMul;
@@ -400,14 +432,14 @@ export const particlesScene: Scene2D = {
       const idx = pool.length;
       if (variant === 0) {
         spawnRising(p, w, h, idx, va);
-        p.x = Math.random() * w;
-        p.y = Math.random() * h;
-        p.life = Math.random();
+        p.x = spawnStream.next() * w;
+        p.y = spawnStream.next() * h;
+        p.life = spawnStream.next();
       } else if (variant === 1) {
         spawnOrbital(p, cx, cy, idx, va);
       } else if (variant === 2) {
         spawnRain(p, w, idx, va);
-        p.y = Math.random() * h;
+        p.y = spawnStream.next() * h;
       } else {
         spawnStarfield(p, cx, cy, idx, va);
       }

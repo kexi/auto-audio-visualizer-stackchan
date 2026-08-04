@@ -1,6 +1,7 @@
 import type { Scene2D, SceneContext } from './types';
 import type { Variation } from '../variation/types';
 import { clamp, clamp01, lerp, hsla, idlePulse, spreadHue, beatPulse, beatTrigger } from './util';
+import { createRngStream, type RngStream } from '../synth/rng';
 
 interface Ring {
   x: number;
@@ -22,6 +23,8 @@ let smoothBass = 0;
 let idleTimer = 0;
 let spawnCounter = 0;
 const IDLE_INTERVAL = 1.4;
+let lastSeed = '';
+let spawnStream: RngStream = createRngStream('', 'scene:rings:spawn');
 
 function spawnRing(
   cx: number,
@@ -37,8 +40,9 @@ function spawnRing(
   const bi = fromBeat ? clamp01(beatIntensity) : 0.25;
   const sides = clamp(3 + Math.round(va.shape * 5), 3, 8);
   const segmentCount = va.symmetry;
-  const spawnAngleOffset = Math.random() * Math.PI * 2;
-  const rotationRate = (0.3 + Math.random() * 0.5) * va.speed * (Math.random() < 0.5 ? 1 : -1);
+  const spawnAngleOffset = spawnStream.next() * Math.PI * 2;
+  const rotationRate =
+    (0.3 + spawnStream.next() * 0.5) * va.speed * (spawnStream.next() < 0.5 ? 1 : -1);
 
   const variant = va.variant;
 
@@ -57,10 +61,10 @@ function spawnRing(
   const maxR =
     variant === 3
       ? Math.max(Math.max(spawnX, w - spawnX), Math.max(spawnY, h - spawnY)) *
-        (1.1 + Math.random() * 0.4)
-      : Math.max(cx, cy) * (1.1 + Math.random() * 0.4);
+        (1.1 + spawnStream.next() * 0.4)
+      : Math.max(cx, cy) * (1.1 + spawnStream.next() * 0.4);
 
-  const ringHue = spreadHue(va, baseHue, Math.random(), undefined);
+  const ringHue = spreadHue(va, baseHue, spawnStream.next(), undefined);
 
   rings.push({
     x: spawnX,
@@ -70,7 +74,7 @@ function spawnRing(
     alpha: 0.7 + bi * 0.3,
     hue: ringHue,
     lineWidth: 1 + bi * 5 + bass * 3,
-    speed: (120 + bass * 180 + bi * 80 + Math.random() * 40) * va.speed,
+    speed: (120 + bass * 180 + bi * 80 + spawnStream.next() * 40) * va.speed,
     sides,
     segmentCount,
     spawnAngleOffset,
@@ -89,6 +93,7 @@ export const ringsScene: Scene2D = {
     smoothBass = 0;
     idleTimer = 0;
     spawnCounter = 0;
+    lastSeed = '';
   },
 
   draw(s: SceneContext) {
@@ -96,6 +101,11 @@ export const ringsScene: Scene2D = {
     const { bass, running } = audio;
     const beat = beatTrigger(audio);
     const pulse = beatPulse(audio);
+
+    if (va.seed !== lastSeed) {
+      lastSeed = va.seed;
+      spawnStream = createRngStream(va.seed, 'scene:rings:spawn');
+    }
 
     const cx = w * 0.5;
     const cy = h * 0.5;
