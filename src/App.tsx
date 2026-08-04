@@ -3,6 +3,7 @@ import { AudioEngine } from './audio/AudioEngine';
 import { Renderer } from './render/Renderer';
 import { scenes, sceneByIndex, sceneIndexById } from './scenes';
 import { ControlPanel } from './ui/ControlPanel';
+import { TimelinePanel } from './ui/TimelinePanel';
 import { useSettings } from './ui/useSettings';
 import type { Settings } from './ui/useSettings';
 import { generateVariation, randomSeed } from './variation/generate';
@@ -361,6 +362,7 @@ export function App(): React.ReactElement {
         onTempoMultiply={onTempoMultiply}
         onTempoAuto={onTempoAuto}
       />
+      <TimelinePanel hidden={panelHidden} />
     </>
   );
 }

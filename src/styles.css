@@ -423,3 +423,233 @@ input[type='range'] {
   color: var(--panel-fg);
   text-align: center;
 }
+
+/* ---- Timeline debug panel ---- */
+.tl-panel {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 340px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 14px 14px 12px;
+  border-radius: 16px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--panel-fg);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  line-height: 1.4;
+  z-index: 10;
+  user-select: auto;
+}
+
+.tl-panel.hidden {
+  display: none;
+}
+
+.tl-header {
+  margin-bottom: 10px;
+}
+
+.tl-panel.collapsed {
+  overflow: visible;
+}
+.tl-panel.collapsed .tl-header {
+  margin-bottom: 0;
+}
+.tl-panel.collapsed .tl-body {
+  display: none;
+}
+
+.tl-section {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.tl-section:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.tl-kv {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.tl-k {
+  flex: 0 0 62px;
+  color: var(--panel-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.tl-v {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-note {
+  margin-top: 4px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--panel-fg-dim);
+}
+
+.tl-json {
+  display: block;
+  width: 100%;
+  min-height: 140px;
+  margin-bottom: 6px;
+  appearance: none;
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--panel-fg);
+  border-radius: 10px;
+  padding: 7px 9px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  resize: vertical;
+}
+.tl-json:focus {
+  outline: none;
+  border-color: rgba(120, 195, 255, 0.6);
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.tl-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tl-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.tl-anchor {
+  flex: 0 0 auto;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--panel-fg-dim);
+}
+.tl-intent {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-remove {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.tl-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--panel-fg-dim);
+}
+.tl-badge.locked {
+  background: rgba(255, 190, 80, 0.18);
+  border-color: rgba(255, 190, 80, 0.4);
+  color: hsl(38, 90%, 80%);
+}
+.tl-badge.fired {
+  background: rgba(90, 180, 255, 0.2);
+  border-color: rgba(120, 195, 255, 0.45);
+  color: hsl(205, 90%, 84%);
+}
+
+.tl-issues {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: hsl(8, 90%, 82%);
+  list-style: disc;
+}
+div.tl-issues {
+  padding-left: 0;
+  list-style: none;
+}
+
+.tl-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.tl-form-row > .btn.small {
+  flex: 0 0 auto;
+}
+
+.btn.small {
+  padding: 5px 8px;
+  font-size: 11px;
+  border-radius: 8px;
+}
+.btn.small.on {
+  background: rgba(255, 90, 90, 0.24);
+  border-color: rgba(255, 120, 120, 0.5);
+}
+
+.tl-panel input[type='number'] {
+  width: 72px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.tl-panel select {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.tl-panel .seed-input {
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.tl-file {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--panel-fg-dim);
+}
+.tl-file::file-selector-button {
+  appearance: none;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-fg);
+  border-radius: 8px;
+  padding: 4px 8px;
+  margin-right: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}

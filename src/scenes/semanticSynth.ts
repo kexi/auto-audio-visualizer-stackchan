@@ -9,19 +9,45 @@ import {
   FULLSCREEN_VERT,
   Uniforms,
 } from '../render/glutil';
+import { gatePatchProposal } from '../synth/apply';
+import { createCatalog } from '../synth/catalog';
+import {
+  notifySynthControlChanged,
+  registerSynthControl,
+  type SynthControlBackend,
+} from '../synth/control';
+import { DEFAULT_BUDGETS } from '../synth/cost';
 import { derivePatch } from '../synth/derive';
 import { assemblePatch, SEED_UNIFORM, type AssembledShader } from '../synth/gl/assemble';
-import { inlineCatalog } from '../synth/generators';
+import { allGeneratorDefinitions, inlineCatalog } from '../synth/generators';
 import {
   applyModulation,
   createModulationEngine,
   type ModulationEngine,
 } from '../synth/modulation';
 import { createQualityController, type QualityController } from '../synth/quality';
+import {
+  createRecorder,
+  parseRecording,
+  replayTimeline,
+  serializeRecording,
+} from '../synth/recording';
 import { namespaceToU32, seedToU32 } from '../synth/rng';
-import { serializePatch } from '../synth/schema';
+import { parsePatch, serializePatch } from '../synth/schema';
+import {
+  applyOp,
+  collectDue,
+  createSchedulerState,
+  type DueEvent,
+  fireExternal as fireExternalEvents,
+  type PerformanceTimeline,
+  type SchedulerState,
+  timeContextFrom,
+  type TimeContext,
+  type TimelineOp,
+} from '../synth/timeline';
 import { createTransition, sameTopology, type Transition } from '../synth/transition';
-import { DEFAULT_TRANSITION, type VisualPatch } from '../synth/types';
+import { DEFAULT_TRANSITION, type TransitionSpec, type VisualPatch } from '../synth/types';
 
 /**
  * Semantic Synth — the generative scene.
@@ -35,9 +61,16 @@ import { DEFAULT_TRANSITION, type VisualPatch } from '../synth/types';
  *   warms a second deck up and crossfades once its program has linked.
  * - Internal resolution scaling. Below 1.0 the decks render into an offscreen
  *   FBO that is blitted back up to the drawing buffer.
+ *
+ * On top of both sits the Timeline: scheduled events, external triggers and UI
+ * proposals all queue a target patch that the deck machine picks up on the next
+ * frame it is free. The scene publishes itself through the External Control
+ * Interface (synth/control) so none of those callers has to know about it.
  */
 
 const CACHE_LIMIT = 8;
+/** Recording metadata; tracks the package version. */
+const ENGINE_VERSION = '1.0.0';
 
 /** Internal-resolution ladder, highest first. Mirrors the quality controller. */
 const SCALE_STEPS = [1.0, 0.75, 0.5] as const;
@@ -113,8 +146,10 @@ type Compiled = {
 type DeckPhase = 'idle' | 'warmup' | 'fading';
 
 let vao: WebGLVertexArrayObject | null = null;
-/** The seed the state machine is converging to — not necessarily on screen yet. */
-let targetSeed: string | null = null;
+/** Edge detector for the va.seed path. Written there and nowhere else. */
+let observedVaSeed: string | null = null;
+/** 現在セットアップ中／進行中の遷移に使う spec。 */
+let activeSpec: TransitionSpec = DEFAULT_TRANSITION;
 let phase: DeckPhase = 'idle';
 /** Deck A: what the audience sees. */
 let front: SynthDeck | null = null;
@@ -132,6 +167,20 @@ let parallelCompile: { COMPLETION_STATUS_KHR: number } | null | undefined;
 let quality: QualityController | null = null;
 let scaleTarget: Fbo | null = null;
 let blit: Compiled | null = null;
+/** 直近フレームの実効解像度スケール。 */
+let lastScale = 1;
+
+// ---- timeline / external control ----
+let timeline: PerformanceTimeline = { lockedUntilSec: 0, events: [] };
+let scheduler: SchedulerState = createSchedulerState();
+let recorder: ReturnType<typeof createRecorder> | null = null;
+/** 直近フレームの TimeContext。UI からの op 適用に使う。 */
+let lastCtx: TimeContext = { nowSec: 0, barCount: 0, barPhase: 0, bpm: 0, tempoLocked: false };
+/** 次にフェード可能になったフレームで適用する遷移先。Timeline / UI 提案が積む。 */
+let pendingTarget: { seed: string; patch: VisualPatch; spec: TransitionSpec } | null = null;
+let unregisterControl: (() => void) | null = null;
+/** Metadata-only catalog for the proposal gate; assembled once. */
+const metaCatalog = createCatalog(allGeneratorDefinitions());
 
 function getParallelCompileExt(
   gl: WebGL2RenderingContext,
@@ -295,11 +344,14 @@ function installLoaded(gl: WebGL2RenderingContext, compiled: Compiled, nowMs: nu
     // warmup → fading. startMs is *now*, so the fade covers its full duration
     // regardless of how long the compile took.
     incoming = deck;
-    deckFade = createTransition(front.live, deck.patch, DEFAULT_TRANSITION, nowMs);
+    deckFade = createTransition(front.live, deck.patch, activeSpec, nowMs);
     phase = 'fading';
   }
   // Insert after the deck exists so eviction can see the program is in use.
   cacheInsert(gl, { key: l.key, prog: compiled.prog, uni: compiled.uni });
+  // Either branch changes what getState() reports: a cold start puts the first
+  // patch on screen, a warmup turns into a running crossfade.
+  notifySynthControlChanged();
 }
 
 /**
@@ -374,28 +426,65 @@ function advanceLoad(gl: WebGL2RenderingContext, nowMs: number): void {
   installLoaded(gl, { prog, uni: new Uniforms(gl, prog) }, nowMs);
 }
 
-/** React to a seed change. The topology decides which kind of transition runs. */
-function syncSeed(gl: WebGL2RenderingContext, seed: string, nowMs: number): void {
-  if (seed === targetSeed) return;
-  // A crossfade owns both decks, so a new seed can't be started here. targetSeed
-  // is left stale on purpose: the comparison above re-fires once we reach idle.
-  if (phase === 'fading') return;
-
-  targetSeed = seed;
-  const patch = derivePatch(seed, { catalog: inlineCatalog });
+/** どのソース（va.seed / Timeline / UI 提案）から来た Patch でも、ここを通して遷移させる。 */
+function gotoPatch(
+  gl: WebGL2RenderingContext,
+  seed: string,
+  patch: VisualPatch,
+  spec: TransitionSpec,
+  nowMs: number,
+): void {
+  // installLoaded may run several frames later, so the spec has to be parked
+  // here rather than passed down.
+  activeSpec = spec;
 
   if (front && sameTopology(front.live, patch)) {
     // Same operator graph → same shader. Morph in place on the single deck; the
     // warmup (if any) targeted a topology nobody wants any more.
     cancelLoad(gl);
     phase = 'idle';
-    front.morph = createTransition(front.live, patch, DEFAULT_TRANSITION, nowMs);
+    front.morph = createTransition(front.live, patch, spec, nowMs);
     front.patch = patch;
+    notifySynthControlChanged();
     return;
   }
 
   // Different graph → a second deck has to be compiled before anything fades.
   startLoad(gl, seed, patch, nowMs);
+  notifySynthControlChanged();
+}
+
+/** React to a va.seed change. The topology decides which kind of transition runs. */
+function syncSeed(gl: WebGL2RenderingContext, seed: string, nowMs: number): void {
+  if (seed === observedVaSeed) return;
+  // クロスフェード中は新しい seed を始められない。observedVaSeed をわざと古いまま
+  // 残すので、idle に戻った最初のフレームで再発火する。
+  if (phase === 'fading') return;
+
+  observedVaSeed = seed;
+  gotoPatch(gl, seed, derivePatch(seed, { catalog: inlineCatalog }), DEFAULT_TRANSITION, nowMs);
+}
+
+/**
+ * Turn a fired event into a pending target. collectDue hands events over in
+ * fire-time order, so when several land on the same frame the last one wins.
+ */
+function handleDue(d: DueEvent): void {
+  recorder?.recordFired(lastCtx.nowSec, d.event.id);
+
+  const { patch, seed } = d.event.intent;
+  if (patch) {
+    pendingTarget = { seed: patch.seed, patch, spec: d.event.transition };
+    return;
+  }
+  if (seed !== undefined) {
+    pendingTarget = {
+      seed,
+      patch: derivePatch(seed, { catalog: inlineCatalog }),
+      spec: d.event.transition,
+    };
+  }
+  // An intent carrying neither is a label-only marker — nothing to show.
 }
 
 /** Advance a deck's in-place morph and refresh what it renders this frame. */
@@ -411,6 +500,7 @@ function updateDeck(deck: SynthDeck, nowMs: number): void {
     // Swap the modulation engine only once the routes have settled: rebuilding
     // it per frame would reset the exponential smoothing state every frame.
     deck.modEngine = createModulationEngine(deck.patch.routes);
+    notifySynthControlChanged();
   }
 }
 
@@ -426,7 +516,11 @@ function advanceFade(nowMs: number): { fadeA: number; fadeB: number } {
     incoming = null;
     deckFade = null;
     phase = 'idle';
-    targetSeed = front.seed;
+    // observedVaSeed is deliberately left alone. It tracks the va.seed path only;
+    // writing front.seed back here would make a Timeline-driven transition look
+    // like an unhandled va.seed change and snap the visual back to the URL seed
+    // on the very next frame.
+    notifySynthControlChanged();
     return { fadeA: 1, fadeB: 0 };
   }
   return { fadeA: sample.fadeA, fadeB: sample.fadeB };
@@ -538,6 +632,110 @@ function blitToScreen(gl: WebGL2RenderingContext, src: Fbo, pxW: number, pxH: nu
   gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
+/**
+ * The scene's side of the External Control Interface. Everything that would
+ * start a transition only queues {@link pendingTarget}: the deck machine owns
+ * when a change is allowed to happen, and draw() is the single place that
+ * decides it.
+ */
+const control: SynthControlBackend = {
+  getState() {
+    return {
+      currentPatch: front ? front.patch : null,
+      timeline,
+      transitionActive:
+        phase !== 'idle' || loading !== null || (front !== null && front.morph !== null),
+      qualityScale: lastScale,
+      recordingActive: recorder !== null,
+      nowSec: lastCtx.nowSec,
+      barCount: lastCtx.barCount,
+      tempoLocked: lastCtx.tempoLocked,
+      firedIds: scheduler.firedIds,
+    };
+  },
+
+  proposePatch(input: unknown) {
+    // The budget is per quality tier, so the tier has to be read off the input
+    // before the gate can be handed one.
+    const parsed = parsePatch(input);
+    if (!parsed.ok) return { ok: false, issues: parsed.issues };
+
+    const result = gatePatchProposal(input, metaCatalog, DEFAULT_BUDGETS[parsed.patch.qualityTier]);
+    if (!result.ok || !result.patch) {
+      return { ok: false, issues: result.issues.map((i) => i.message) };
+    }
+    pendingTarget = { seed: result.patch.seed, patch: result.patch, spec: DEFAULT_TRANSITION };
+    notifySynthControlChanged();
+    return { ok: true, issues: [] };
+  },
+
+  proposeSeed(seed: string) {
+    pendingTarget = {
+      seed,
+      patch: derivePatch(seed, { catalog: inlineCatalog }),
+      spec: DEFAULT_TRANSITION,
+    };
+    notifySynthControlChanged();
+  },
+
+  applyTimelineOp(op: TimelineOp) {
+    const result = applyOp(timeline, op, lastCtx);
+    if (!result.ok) return { ok: false, issue: result.issue };
+
+    timeline = result.timeline;
+    // Record the op, not its effect: replay rebuilds the timeline by re-applying.
+    recorder?.recordOp(lastCtx.nowSec, op);
+    notifySynthControlChanged();
+    return { ok: true };
+  },
+
+  fireExternal(id: string) {
+    const { due, state } = fireExternalEvents(timeline, scheduler, id, lastCtx);
+    if (due.length === 0) return;
+    scheduler = state;
+    for (const d of due) handleDue(d);
+    notifySynthControlChanged();
+  },
+
+  startRecording() {
+    // Without a deck on screen there is no initial patch to record against.
+    if (recorder || !front) return;
+    recorder = createRecorder(ENGINE_VERSION, front.patch.seed, front.patch);
+    notifySynthControlChanged();
+  },
+
+  stopRecording() {
+    if (!recorder) return null;
+    const json = serializeRecording(recorder.snapshot());
+    recorder = null;
+    notifySynthControlChanged();
+    return json;
+  },
+
+  loadRecording(json: string) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(json);
+    } catch (e) {
+      return { ok: false, issues: [`invalid JSON: ${e instanceof Error ? e.message : String(e)}`] };
+    }
+    const parsed = parseRecording(raw);
+    if (!parsed.ok) return { ok: false, issues: parsed.issues };
+
+    timeline = replayTimeline(parsed.rec, Number.POSITIVE_INFINITY);
+    scheduler = createSchedulerState();
+    // Rewind the visuals too: the recorded events were authored against this
+    // patch, so replaying from anywhere else would drift immediately.
+    pendingTarget = {
+      seed: parsed.rec.initialPatch.seed,
+      patch: parsed.rec.initialPatch,
+      spec: DEFAULT_TRANSITION,
+    };
+    notifySynthControlChanged();
+    return { ok: true, issues: [] };
+  },
+};
+
 export const semanticSynthScene: GlScene = {
   kind: 'gl',
   id: 'semantic-synth',
@@ -547,7 +745,8 @@ export const semanticSynthScene: GlScene = {
     // Called on first activation and after a context loss: every GL object from
     // a previous context is already gone, so drop the references and rebuild.
     vao = createEmptyVao(gl);
-    targetSeed = null;
+    observedVaSeed = null;
+    activeSpec = DEFAULT_TRANSITION;
     phase = 'idle';
     front = null;
     incoming = null;
@@ -557,7 +756,16 @@ export const semanticSynthScene: GlScene = {
     programCache.length = 0;
     parallelCompile = undefined;
     scaleTarget = null;
+    lastScale = 1;
     quality = createQualityController();
+
+    // timeline / scheduler / recorder は GL コンテキストのリソースではなく演奏中の
+    // セッション状態なので、ここではリセットしない。init はコンテキストロスト
+    // 復帰でも呼ばれるため、ここで初期化すると復帰のたびに組んだイベントが無言で
+    // 消え、firedIds も失われて発火済みイベントが再発火してしまう。それらは
+    // dispose（シーンの完全な破棄）でのみ捨てる。
+    pendingTarget = null;
+    unregisterControl = registerSynthControl(control);
 
     try {
       const prog = compileProgram(gl, FULLSCREEN_VERT, BLIT_FRAG);
@@ -569,14 +777,37 @@ export const semanticSynthScene: GlScene = {
   },
 
   draw(s: GlSceneContext) {
-    const { gl, pxW, pxH, t, dt, va } = s;
+    const { gl, pxW, pxH, t, dt, audio, va } = s;
     if (!vao) return;
 
     // Scene time drives every transition — never wall-clock, so the scene stays
     // reproducible under a stubbed clock.
     const nowMs = t * 1000;
+    lastCtx = timeContextFrom(audio, t);
 
-    syncSeed(gl, va.seed, nowMs);
+    // Collect whatever came due this frame and queue it.
+    const { due, state } = collectDue(timeline, scheduler, lastCtx);
+    if (due.length > 0) {
+      scheduler = state;
+      for (const d of due) handleDue(d);
+      notifySynthControlChanged();
+    }
+
+    if (pendingTarget) {
+      // Timeline / UI proposals outrank va.seed. A crossfade owns both decks, so
+      // a queued target simply waits for the frame that reaches idle.
+      if (phase !== 'fading') {
+        const target = pendingTarget;
+        pendingTarget = null;
+        // Mark the current va.seed consumed on the frame the Timeline takes over:
+        // otherwise syncSeed fires next frame and overwrites what just landed.
+        observedVaSeed = va.seed;
+        gotoPatch(gl, target.seed, target.patch, target.spec, nowMs);
+      }
+    } else {
+      syncSeed(gl, va.seed, nowMs);
+    }
+
     advanceLoad(gl, nowMs);
 
     if (front) updateDeck(front, nowMs);
@@ -591,6 +822,7 @@ export const semanticSynthScene: GlScene = {
       // insurance against a stutter landing right on the transition.
       scale = stepDownScale(scale);
     }
+    lastScale = scale;
 
     if (!front) return;
 
@@ -627,6 +859,15 @@ export const semanticSynthScene: GlScene = {
   },
 
   dispose(gl: WebGL2RenderingContext) {
+    unregisterControl?.();
+    unregisterControl = null;
+    // Session state (timeline / scheduler / recorder) is only ever dropped here,
+    // when the scene itself goes away — not in init(), which also runs on
+    // context-restore and must not wipe out a performance in progress.
+    timeline = { lockedUntilSec: 0, events: [] };
+    scheduler = createSchedulerState();
+    recorder = null;
+    pendingTarget = null;
     abandonPending(gl);
     loading = null;
     const deleted = new Set<WebGLProgram>();
@@ -647,7 +888,7 @@ export const semanticSynthScene: GlScene = {
     incoming = null;
     deckFade = null;
     phase = 'idle';
-    targetSeed = null;
+    observedVaSeed = null;
     if (scaleTarget) {
       disposeFbo(gl, scaleTarget);
       scaleTarget = null;
