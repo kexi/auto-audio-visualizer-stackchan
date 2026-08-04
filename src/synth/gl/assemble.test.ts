@@ -137,4 +137,10 @@ describe('synth/gl/assemblePatch', () => {
     expect(fragSrc).toMatch(/vec4 material_0\(float v, vec2 p\)/);
     expect(fragSrc).toContain('synthRand');
   });
+
+  it('includes uFade uniform and multiplies fragColor by it', () => {
+    const { fragSrc } = assemblePatch(defaultPatch(), inlineCatalog);
+    expect(fragSrc).toContain('uniform float uFade;');
+    expect(fragSrc).toContain('fragColor *= uFade');
+  });
 });
