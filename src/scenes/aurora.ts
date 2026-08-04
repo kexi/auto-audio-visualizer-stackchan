@@ -199,8 +199,18 @@ export const auroraScene: GlScene = {
 
     // Three layered hues across the spread.
     const colA = hslToRgb(hue, va.saturation, va.lightness, cA);
-    const colB = hslToRgb(spreadHue(va, hue, 0.5), Math.min(100, va.saturation + 8), Math.min(78, va.lightness + 10), cB);
-    const colC = hslToRgb(spreadHue(va, hue, 1, 1), va.saturation, Math.min(82, va.lightness + 18), cC);
+    const colB = hslToRgb(
+      spreadHue(va, hue, 0.5),
+      Math.min(100, va.saturation + 8),
+      Math.min(78, va.lightness + 10),
+      cB,
+    );
+    const colC = hslToRgb(
+      spreadHue(va, hue, 1, 1),
+      va.saturation,
+      Math.min(82, va.lightness + 18),
+      cC,
+    );
 
     const pulse = audio.tempoLocked ? audio.gridPulse : audio.beatIntensity;
 

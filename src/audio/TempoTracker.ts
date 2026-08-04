@@ -419,10 +419,7 @@ export class TempoTracker {
       }
       const recent = intervals.slice(-TAP_MAX_INTERVALS).sort((a, b) => a - b);
       const mid = Math.floor(recent.length / 2);
-      const median =
-        recent.length % 2 === 1
-          ? recent[mid]!
-          : (recent[mid - 1]! + recent[mid]!) / 2;
+      const median = recent.length % 2 === 1 ? recent[mid]! : (recent[mid - 1]! + recent[mid]!) / 2;
       if (median > 0) {
         this.manualBpm = 60000 / median;
         this.mode = 'manual';
@@ -484,8 +481,7 @@ export class TempoTracker {
     out.gridPulse = this.gridPulse;
     out.barPulse = this.barPulse;
     out.tempoConfidence = clamp(this.confidence, 0, 1);
-    out.tempoLocked =
-      bpm > 0 && (this.mode === 'manual' || this.confidence > LOCK_CONFIDENCE);
+    out.tempoLocked = bpm > 0 && (this.mode === 'manual' || this.confidence > LOCK_CONFIDENCE);
     out.tempoMode = this.mode;
   }
 }

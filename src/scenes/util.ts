@@ -75,7 +75,7 @@ export function hslToRgb(
  * oscillation in so scenes are never a static black void.
  */
 export function idlePulse(t: number, speed = 1, phase = 0): number {
-  return (Math.sin(t * speed + phase) * 0.5 + 0.5);
+  return Math.sin(t * speed + phase) * 0.5 + 0.5;
 }
 
 /**

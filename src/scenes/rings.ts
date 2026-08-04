@@ -215,14 +215,14 @@ export const ringsScene: Scene2D = {
         ctx.restore();
       } else {
         // variant === 2: arc segments
-        const segSpan = (Math.PI * 2 / ring.segmentCount) * 0.6;
+        const segSpan = ((Math.PI * 2) / ring.segmentCount) * 0.6;
 
         // Layer 1: glow
         ctx.strokeStyle = hsla(ring.hue, va.saturation, va.lightness, 1);
         ctx.lineWidth = lw + 8;
         ctx.globalAlpha = effectiveAlpha * 0.12;
         for (let k = 0; k < ring.segmentCount; k++) {
-          const startAngle = ring.spawnAngleOffset + k * (Math.PI * 2 / ring.segmentCount);
+          const startAngle = ring.spawnAngleOffset + k * ((Math.PI * 2) / ring.segmentCount);
           ctx.beginPath();
           ctx.arc(ring.x, ring.y, ring.radius, startAngle, startAngle + segSpan);
           ctx.stroke();
@@ -233,7 +233,7 @@ export const ringsScene: Scene2D = {
         ctx.lineWidth = Math.max(0.8, lw * 0.5);
         ctx.globalAlpha = effectiveAlpha * 0.9;
         for (let k = 0; k < ring.segmentCount; k++) {
-          const startAngle = ring.spawnAngleOffset + k * (Math.PI * 2 / ring.segmentCount);
+          const startAngle = ring.spawnAngleOffset + k * ((Math.PI * 2) / ring.segmentCount);
           ctx.beginPath();
           ctx.arc(ring.x, ring.y, ring.radius, startAngle, startAngle + segSpan);
           ctx.stroke();

@@ -35,6 +35,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # oxfmt --check でフォーマット差分がないことを検証する
+      - name: Format check
+        run: pnpm format:check
+
       # oxlint --type-aware で correctness + 型認識ルールを検証する
       - name: Lint
         run: pnpm lint

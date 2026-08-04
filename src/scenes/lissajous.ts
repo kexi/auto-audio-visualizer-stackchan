@@ -36,12 +36,7 @@ function buildLissajousFromWave(
   return pts;
 }
 
-function buildIdleLissajous(
-  t: number,
-  w: number,
-  h: number,
-  scale: number,
-): Point[] {
+function buildIdleLissajous(t: number, w: number, h: number, scale: number): Point[] {
   const count = 256;
   const pts: Point[] = [];
   const cx = w * 0.5;
@@ -69,7 +64,12 @@ function buildHarmonicFigure(
   va: Variation,
   beatPhaseArg: number,
 ): Point[] {
-  const ratios: [number, number][] = [[1, 2], [2, 3], [3, 4], [3, 5]];
+  const ratios: [number, number][] = [
+    [1, 2],
+    [2, 3],
+    [3, 4],
+    [3, 5],
+  ];
   const idx = Math.floor(va.rand(0) * 4);
   const [a, b] = ratios[idx]!;
   const count = 512;
@@ -116,7 +116,7 @@ function buildRotationalCopies(basePts: Point[], va: Variation, w: number, h: nu
     const angle = (2 * Math.PI * k) / va.symmetry;
     const cosA = Math.cos(angle);
     const sinA = Math.sin(angle);
-    const copy: Point[] = basePts.map(p => {
+    const copy: Point[] = basePts.map((p) => {
       const dx = p.x - cx;
       const dy = p.y - cy;
       return {
@@ -172,10 +172,7 @@ export const lissajousScene: Scene2D = {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    const baseAlpha =
-      running && !isFlat
-        ? clamp01(0.2 + smoothLevel * 0.55 + pulse * 0.25)
-        : 0.18;
+    const baseAlpha = running && !isFlat ? clamp01(0.2 + smoothLevel * 0.55 + pulse * 0.25) : 0.18;
 
     const variant = va.variant;
 

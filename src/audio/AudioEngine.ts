@@ -353,10 +353,7 @@ export class AudioEngine {
     this.beatIntensity *= BEAT_DECAY;
 
     const history = this.bassHistory;
-    const avg =
-      history.length > 0
-        ? history.reduce((a, b) => a + b, 0) / history.length
-        : 0;
+    const avg = history.length > 0 ? history.reduce((a, b) => a + b, 0) / history.length : 0;
 
     history.push(rawBass);
     if (history.length > BEAT_HISTORY) history.shift();
@@ -393,10 +390,7 @@ export class AudioEngine {
       this.hzToBin(BASS_RANGE[0], sampleRate),
       this.hzToBin(BASS_RANGE[1], sampleRate),
     ];
-    this.midBins = [
-      this.hzToBin(MID_RANGE[0], sampleRate),
-      this.hzToBin(MID_RANGE[1], sampleRate),
-    ];
+    this.midBins = [this.hzToBin(MID_RANGE[0], sampleRate), this.hzToBin(MID_RANGE[1], sampleRate)];
     this.trebleBins = [
       this.hzToBin(TREBLE_RANGE[0], sampleRate),
       this.hzToBin(TREBLE_RANGE[1], sampleRate),

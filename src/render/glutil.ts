@@ -23,11 +23,7 @@ void main() {
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-function compileShader(
-  gl: WebGL2RenderingContext,
-  type: number,
-  src: string,
-): WebGLShader {
+function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const sh = gl.createShader(type);
   if (!sh) throw new Error('Failed to create shader object');
   gl.shaderSource(sh, src);
@@ -86,10 +82,7 @@ export function createEmptyVao(gl: WebGL2RenderingContext): WebGLVertexArrayObje
  * one), issues a 3-vertex draw, and leaves the VAO bound. The active program is
  * assumed to use {@link FULLSCREEN_VERT}.
  */
-export function drawFullscreen(
-  gl: WebGL2RenderingContext,
-  vao: WebGLVertexArrayObject,
-): void {
+export function drawFullscreen(gl: WebGL2RenderingContext, vao: WebGLVertexArrayObject): void {
   gl.bindVertexArray(vao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
