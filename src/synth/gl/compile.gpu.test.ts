@@ -1,18 +1,33 @@
 /**
  * GPU compile/link smoke test for assemblePatch output.
  *
- * Covers every inline generator solo and linear source×{field,modifier,material}
- * combinations. Playwright + Chromium; skip with visible reason if browser unavailable.
+ * The exhaustive source×{field,modifier,material} cross product reached 1533
+ * patches at 83 generators and grows quadratically, so the normal run is built
+ * from two explicit guarantees instead:
+ *
+ * 1. coverage — every inline generator appears solo in at least one patch
+ * 2. sampling — every source is additionally paired with a deterministically
+ *    sampled 2 fields / 2 modifiers / 2 materials (rand(), fixed seed +
+ *    namespace, so the patch set is identical on every machine and run)
+ *
+ * Set VJ_GPU_FULL=1 to compile the exhaustive cross product instead — slower,
+ * meant for a pre-release sweep rather than the normal loop.
+ *
+ * Playwright + Chromium; skip with visible reason if browser unavailable.
  */
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, describe, expect, it } from 'vitest';
 import { FULLSCREEN_VERT } from '../../render/glutil';
 import { assemblePatch } from './assemble';
-import { inlineCatalog } from '../generators';
+import { inlineCatalog, type InlineGenerator } from '../generators';
+import { rand } from '../rng';
 import type { GeneratorDefinition, VisualOperator, VisualPatch } from '../types';
 
-const executablePath = (globalThis as { process?: { env?: { CHROMIUM_BIN?: string } } }).process
-  ?.env?.CHROMIUM_BIN;
+const env = (globalThis as { process?: { env?: { CHROMIUM_BIN?: string; VJ_GPU_FULL?: string } } })
+  .process?.env;
+const executablePath = env?.CHROMIUM_BIN;
+/** Opt-in exhaustive sweep. */
+const fullSweep = env?.VJ_GPU_FULL === '1';
 const launchOptions = {
   headless: true,
   args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-gl=angle'],
@@ -121,18 +136,88 @@ function soloPatchFor(genId: string): NamedPatch {
   }
 }
 
-/** Linear combination patches: each source × (each field | each mod | each material). */
-function combinationPatches(): NamedPatch[] {
-  const all = inlineCatalog.all();
-  const sources = all.filter((g) => roleOf(g.def) === 'source');
-  const fields = all.filter((g) => roleOf(g.def) === 'field');
-  const mods = all.filter((g) => {
-    const r = roleOf(g.def);
-    return r === 'mod_coord' || r === 'mod_value';
-  });
-  const materials = all.filter((g) => roleOf(g.def) === 'material');
-  const neon = requireGen('neon');
+interface RolePools {
+  sources: InlineGenerator[];
+  fields: InlineGenerator[];
+  mods: InlineGenerator[];
+  materials: InlineGenerator[];
+}
 
+function rolePools(): RolePools {
+  const all = inlineCatalog.all();
+  return {
+    sources: all.filter((g) => roleOf(g.def) === 'source'),
+    fields: all.filter((g) => roleOf(g.def) === 'field'),
+    mods: all.filter((g) => {
+      const r = roleOf(g.def);
+      return r === 'mod_coord' || r === 'mod_value';
+    }),
+    materials: all.filter((g) => roleOf(g.def) === 'material'),
+  };
+}
+
+/** Fixed sampling key — the sampled patch set must not drift between runs. */
+const SAMPLE_SEED = 'gpu-compile-sample';
+const SAMPLE_NS = 'test:sample';
+/** Sampled partners drawn per source, per pool. */
+const PICKS_PER_POOL = 2;
+
+/** Deterministically pick two distinct entries (or the whole pool if it is smaller). */
+function pickTwo(pool: InlineGenerator[], salt: number): InlineGenerator[] {
+  const n = pool.length;
+  if (n <= PICKS_PER_POOL) return [...pool];
+  const i0 = Math.min(n - 1, Math.floor(rand(SAMPLE_SEED, SAMPLE_NS, salt) * n));
+  let i1 = Math.min(n - 2, Math.floor(rand(SAMPLE_SEED, SAMPLE_NS, salt + 1) * (n - 1)));
+  // skip over i0 so the second pick is always a different generator
+  if (i1 >= i0) i1 += 1;
+  return [pool[i0]!, pool[i1]!];
+}
+
+/** Guarantee 2: each source × a deterministic sample of fields / modifiers / materials. */
+function sampledCombinationPatches(): NamedPatch[] {
+  const { sources, fields, mods, materials } = rolePools();
+  const neon = requireGen('neon');
+  const out: NamedPatch[] = [];
+
+  sources.forEach((src, si) => {
+    // a salt block per source: adding a source does not reshuffle the others
+    const salt = si * 16;
+    for (const fld of pickTwo(fields, salt)) {
+      out.push({
+        label: `sample/source:${src.def.id}+field:${fld.def.id}+material:neon`,
+        patch: basePatch([
+          opFromDef('src0', src.def),
+          opFromDef('fld0', fld.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      });
+    }
+    for (const mod of pickTwo(mods, salt + 4)) {
+      const r = roleOf(mod.def);
+      out.push({
+        label: `sample/source:${src.def.id}+${r}:${mod.def.id}+material:neon`,
+        patch: basePatch([
+          opFromDef('mod0', mod.def),
+          opFromDef('src0', src.def),
+          opFromDef('mat0', neon.def),
+        ]),
+      });
+    }
+    for (const mat of pickTwo(materials, salt + 8)) {
+      out.push({
+        label: `sample/source:${src.def.id}+material:${mat.def.id}`,
+        patch: basePatch([opFromDef('src0', src.def), opFromDef('mat0', mat.def)]),
+      });
+    }
+  });
+
+  return out;
+}
+
+/** Exhaustive source × {field | modifier | material} product — VJ_GPU_FULL=1 only. */
+function fullCombinationPatches(): NamedPatch[] {
+  const { sources, fields, mods, materials } = rolePools();
+  const neon = requireGen('neon');
   const out: NamedPatch[] = [];
 
   for (const src of sources) {
@@ -169,8 +254,29 @@ function combinationPatches(): NamedPatch[] {
 }
 
 function buildAllPatches(): NamedPatch[] {
+  // guarantee 1: every generator solo, so nothing can be silently dropped
   const solos = inlineCatalog.all().map((g) => soloPatchFor(g.def.id));
-  return [...solos, ...combinationPatches()];
+  return [...solos, ...(fullSweep ? fullCombinationPatches() : sampledCombinationPatches())];
+}
+
+/** Every generator id referenced by the given patches. */
+function generatorsCovered(patches: NamedPatch[]): Set<string> {
+  const seen = new Set<string>();
+  for (const { patch } of patches) {
+    for (const op of patch.operators) seen.add(op.generatorId);
+  }
+  return seen;
+}
+
+function expectedPatchCount(): number {
+  const { sources, fields, mods, materials } = rolePools();
+  const solos = inlineCatalog.all().length;
+  const perSource = fullSweep
+    ? fields.length + mods.length + materials.length
+    : Math.min(PICKS_PER_POOL, fields.length) +
+      Math.min(PICKS_PER_POOL, mods.length) +
+      Math.min(PICKS_PER_POOL, materials.length);
+  return solos + sources.length * perSource;
 }
 
 async function compileInBrowser(
@@ -261,8 +367,24 @@ try {
 
 const ALL_PATCHES = buildAllPatches();
 const PATCH_COUNT = ALL_PATCHES.length;
+const EXPECTED_PATCH_COUNT = expectedPatchCount();
 
 describe('synth/gl assemblePatch GPU compile', () => {
+  // Plan checks need no GPU: they guard the sampling itself, so a browserless
+  // machine still fails loudly if a generator drops out of the patch set.
+  it(`patch set covers all 100 generators (${PATCH_COUNT} patches, full=${fullSweep})`, () => {
+    const catalog = inlineCatalog.all();
+    // catalog size sanity: 100 generators
+    expect(catalog.length).toBe(100);
+    expect(PATCH_COUNT).toBe(EXPECTED_PATCH_COUNT);
+    expect(PATCH_COUNT).toBeGreaterThan(0);
+
+    const covered = generatorsCovered(ALL_PATCHES);
+    const missing = catalog.map((g) => g.def.id).filter((id) => !covered.has(id));
+    expect(missing, `generators absent from every patch: ${missing.join(', ')}`).toEqual([]);
+    expect(covered.size).toBe(catalog.length);
+  });
+
   if (!browser || !page) {
     it.skip(`browser unavailable — GPU compile tests skipped${
       browserLaunchError instanceof Error ? `: ${browserLaunchError.message}` : ''
@@ -278,16 +400,19 @@ describe('synth/gl assemblePatch GPU compile', () => {
     await br.close().catch(() => {});
   });
 
-  // 83 generators → hundreds of combination patches; default 5s testTimeout is too short.
-  const compileTimeoutMs = 120_000;
+  // Sampled runs land in the low hundreds of patches; VJ_GPU_FULL=1 is far
+  // heavier, so keep the ceiling generous.
+  const compileTimeoutMs = 180_000;
 
   it(
     `compiles ${PATCH_COUNT} patches covering all generators`,
     async () => {
-      expect(PATCH_COUNT).toBeGreaterThan(0);
-      // catalog size sanity: 83 generators
-      expect(inlineCatalog.all().length).toBe(83);
-      console.log(`[compile.gpu.test] verifying ${PATCH_COUNT} patches`);
+      expect(PATCH_COUNT).toBe(EXPECTED_PATCH_COUNT);
+      console.log(
+        `[compile.gpu.test] verifying ${PATCH_COUNT} patches (mode=${
+          fullSweep ? 'full' : 'sampled'
+        }, ${inlineCatalog.all().length} generators)`,
+      );
 
       const failures: string[] = [];
 

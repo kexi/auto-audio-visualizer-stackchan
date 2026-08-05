@@ -5,9 +5,11 @@
 import type { GeneratorDefinition } from '../types';
 import { asanohaGenerator } from './asanoha';
 import { asphaltIridescenceGenerator } from './asphaltIridescence';
+import { barcodeGenerator } from './barcode';
 import { beatMoireGenerator } from './beatMoire';
 import { bellowsHoseGenerator } from './bellowsHose';
 import { bathroomGlazeGenerator } from './bathroomGlaze';
+import { blueprintGenerator } from './blueprint';
 import { branchGenerator } from './branch';
 import { brakeLightRainGenerator } from './brakeLightRain';
 import { busJacquardGenerator } from './busJacquard';
@@ -15,9 +17,12 @@ import { busPolarizationGenerator } from './busPolarization';
 import { cassetteWindowGenerator } from './cassetteWindow';
 import { cdDiffractionGenerator } from './cdDiffraction';
 import { cellsGenerator } from './cells';
+import { chainlinkGenerator } from './chainlink';
+import { checkerGenerator } from './checker';
 import { cheapLedGenerator } from './cheapLed';
 import { concentricGenerator } from './concentric';
 import { coneFieldGenerator } from './coneField';
+import { contourGenerator } from './contour';
 import { corruptSaveGenerator } from './corruptSave';
 import { crossingParallaxGenerator } from './crossingParallax';
 import { crtGenerator } from './crt';
@@ -27,11 +32,15 @@ import { flowGenerator } from './flow';
 import { fluorescentGenerator } from './fluorescent';
 import { flyoverBeamsGenerator } from './flyoverBeams';
 import { freezerCyanGenerator } from './freezerCyan';
+import { gammaGenerator } from './gamma';
 import { gateGenerator } from './gate';
+import { goldfoilGenerator } from './goldfoil';
+import { grainGenerator } from './grain';
 import { gridGenerator } from './grid';
 import { grilleGenerator } from './grille';
 import { halftoneGenerator } from './halftone';
 import { harborBackwashGenerator } from './harborBackwash';
+import { hexGridGenerator } from './hexGrid';
 import { hillClimbGenerator } from './hillClimb';
 import { humidGalvanizedGenerator } from './humidGalvanized';
 import { humidityLensGenerator } from './humidityLens';
@@ -53,6 +62,7 @@ import { noiseGenerator } from './noise';
 import { outlineGenerator } from './outline';
 import { paCarpetGenerator } from './paCarpet';
 import { pcbMazeGenerator } from './pcbMaze';
+import { petalsGenerator } from './petals';
 import { pixelateGenerator } from './pixelate';
 import { pointsGenerator } from './points';
 import { polarGenerator } from './polar';
@@ -63,17 +73,22 @@ import { projectorBlackLiftGenerator } from './projectorBlackLift';
 import { pulseGenerator } from './pulse';
 import { qilouShutterGenerator } from './qilouShutter';
 import { repeatGenerator } from './repeat';
+import { risoGenerator } from './riso';
 import { rippleGenerator } from './ripple';
 import { roadStitchGenerator } from './roadStitch';
 import { scalerRingingGenerator } from './scalerRinging';
 import { scanSlipGenerator } from './scanSlip';
 import { scooterSlipstreamGenerator } from './scooterSlipstream';
+import { seaSaltGenerator } from './seaSalt';
 import { seigaihaGenerator } from './seigaiha';
 import { sleeperRailGenerator } from './sleeperRail';
 import { sliceGenerator } from './slice';
 import { sodiumGenerator } from './sodium';
 import { spinGenerator } from './spin';
+import { spiralGenerator } from './spiral';
 import { stripesGenerator } from './stripes';
+import { sunbleachedTarpGenerator } from './sunbleachedTarp';
+import { sunburstGenerator } from './sunburst';
 import { swayGenerator } from './sway';
 import { tapeWowGenerator } from './tapeWow';
 import { templeZigzagGenerator } from './templeZigzag';
@@ -81,9 +96,11 @@ import { thresholdGenerator } from './threshold';
 import { tilesGenerator } from './tiles';
 import { tunnelDraftGenerator } from './tunnelDraft';
 import { typhoonShearGenerator } from './typhoonShear';
+import { urokoGenerator } from './uroko';
 import { viaductJointsGenerator } from './viaductJoints';
 import { vortexGenerator } from './vortex';
 import { wetConcreteGenerator } from './wetConcrete';
+import { windowsGenerator } from './windows';
 import { wiresGenerator } from './wires';
 import { xeroxGenerator } from './xerox';
 import type { InlineGenerator, InlineGeneratorCatalog } from './types';
@@ -114,6 +131,16 @@ export { cassetteWindowGenerator, cassetteWindowDef } from './cassetteWindow';
 export { seigaihaGenerator, seigaihaDef } from './seigaiha';
 export { asanohaGenerator, asanohaDef } from './asanoha';
 export { kumikoGenerator, kumikoDef } from './kumiko';
+export { checkerGenerator, checkerDef } from './checker';
+export { hexGridGenerator, hexGridDef } from './hexGrid';
+export { contourGenerator, contourDef } from './contour';
+export { sunburstGenerator, sunburstDef } from './sunburst';
+export { spiralGenerator, spiralDef } from './spiral';
+export { windowsGenerator, windowsDef } from './windows';
+export { chainlinkGenerator, chainlinkDef } from './chainlink';
+export { barcodeGenerator, barcodeDef } from './barcode';
+export { petalsGenerator, petalsDef } from './petals';
+export { urokoGenerator, urokoDef } from './uroko';
 export { noiseGenerator, noiseDef } from './noise';
 export { vortexGenerator, vortexDef } from './vortex';
 export { flowGenerator, flowDef } from './flow';
@@ -151,6 +178,8 @@ export { interlaceCombGenerator, interlaceCombDef } from './interlaceComb';
 export { halftoneGenerator, halftoneDef } from './halftone';
 export { outlineGenerator, outlineDef } from './outline';
 export { gateGenerator, gateDef } from './gate';
+export { gammaGenerator, gammaDef } from './gamma';
+export { grainGenerator, grainDef } from './grain';
 export { neonGenerator, neonDef } from './neon';
 export { inkGenerator, inkDef } from './ink';
 export { crtGenerator, crtDef } from './crt';
@@ -172,6 +201,11 @@ export { nicotineCeilingGenerator, nicotineCeilingDef } from './nicotineCeiling'
 export { karaokeLcdGenerator, karaokeLcdDef } from './karaokeLcd';
 export { cdDiffractionGenerator, cdDiffractionDef } from './cdDiffraction';
 export { preSilenceBlackGenerator, preSilenceBlackDef } from './preSilenceBlack';
+export { seaSaltGenerator, seaSaltDef } from './seaSalt';
+export { sunbleachedTarpGenerator, sunbleachedTarpDef } from './sunbleachedTarp';
+export { risoGenerator, risoDef } from './riso';
+export { blueprintGenerator, blueprintDef } from './blueprint';
+export { goldfoilGenerator, goldfoilDef } from './goldfoil';
 
 const ALL: InlineGenerator[] = [
   // sources
@@ -200,6 +234,16 @@ const ALL: InlineGenerator[] = [
   seigaihaGenerator,
   asanohaGenerator,
   kumikoGenerator,
+  checkerGenerator,
+  hexGridGenerator,
+  contourGenerator,
+  sunburstGenerator,
+  spiralGenerator,
+  windowsGenerator,
+  chainlinkGenerator,
+  barcodeGenerator,
+  petalsGenerator,
+  urokoGenerator,
   // fields
   noiseGenerator,
   vortexGenerator,
@@ -239,6 +283,8 @@ const ALL: InlineGenerator[] = [
   halftoneGenerator,
   outlineGenerator,
   gateGenerator,
+  gammaGenerator,
+  grainGenerator,
   // materials
   neonGenerator,
   inkGenerator,
@@ -261,6 +307,11 @@ const ALL: InlineGenerator[] = [
   karaokeLcdGenerator,
   cdDiffractionGenerator,
   preSilenceBlackGenerator,
+  seaSaltGenerator,
+  sunbleachedTarpGenerator,
+  risoGenerator,
+  blueprintGenerator,
+  goldfoilGenerator,
 ];
 
 /** Built-in inline generator catalog (Phase 1 generators). */

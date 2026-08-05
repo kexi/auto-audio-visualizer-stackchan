@@ -404,7 +404,7 @@ describe('synth/gl assemblePatch GPU render', () => {
   });
 
   // SIZE=256 + many source×material patches makes multi-patch WebGL/readPixels slow.
-  // 83 generators → unique source/material patches; 60s is too tight.
+  // 100 generators → unique source/material patches; 60s is too tight.
   const renderTimeoutMs = 180_000;
 
   it(
