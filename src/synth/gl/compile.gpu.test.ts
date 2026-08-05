@@ -278,38 +278,45 @@ describe('synth/gl assemblePatch GPU compile', () => {
     await br.close().catch(() => {});
   });
 
-  it(`compiles ${PATCH_COUNT} patches covering all generators`, async () => {
-    expect(PATCH_COUNT).toBeGreaterThan(0);
-    // catalog size sanity: 4 original + 12 new
-    expect(inlineCatalog.all().length).toBe(16);
-    console.log(`[compile.gpu.test] verifying ${PATCH_COUNT} patches`);
+  // 32 generators → hundreds of combination patches; default 5s testTimeout is too short.
+  const compileTimeoutMs = 120_000;
 
-    const failures: string[] = [];
+  it(
+    `compiles ${PATCH_COUNT} patches covering all generators`,
+    async () => {
+      expect(PATCH_COUNT).toBeGreaterThan(0);
+      // catalog size sanity: 32 generators
+      expect(inlineCatalog.all().length).toBe(32);
+      console.log(`[compile.gpu.test] verifying ${PATCH_COUNT} patches`);
 
-    for (const { label, patch } of ALL_PATCHES) {
-      let fragSrc: string;
-      try {
-        fragSrc = assemblePatch(patch, inlineCatalog).fragSrc;
-      } catch (e) {
-        failures.push(
-          `${label}: assemblePatch threw: ${e instanceof Error ? e.message : String(e)}`,
+      const failures: string[] = [];
+
+      for (const { label, patch } of ALL_PATCHES) {
+        let fragSrc: string;
+        try {
+          fragSrc = assemblePatch(patch, inlineCatalog).fragSrc;
+        } catch (e) {
+          failures.push(
+            `${label}: assemblePatch threw: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          continue;
+        }
+        const result = await compileInBrowser(pg, FULLSCREEN_VERT, fragSrc);
+        if (!result.ok) {
+          failures.push(`${label}:\n${result.log}`);
+        }
+      }
+
+      if (failures.length > 0) {
+        throw new Error(
+          `${failures.length}/${PATCH_COUNT} patch(es) failed GPU compile/link:\n\n` +
+            failures.join('\n\n==========\n\n'),
         );
-        continue;
       }
-      const result = await compileInBrowser(pg, FULLSCREEN_VERT, fragSrc);
-      if (!result.ok) {
-        failures.push(`${label}:\n${result.log}`);
-      }
-    }
 
-    if (failures.length > 0) {
-      throw new Error(
-        `${failures.length}/${PATCH_COUNT} patch(es) failed GPU compile/link:\n\n` +
-          failures.join('\n\n==========\n\n'),
-      );
-    }
-
-    expect(failures.length).toBe(0);
-    console.log(`[compile.gpu.test] all ${PATCH_COUNT} patches compiled and linked`);
-  });
+      expect(failures.length).toBe(0);
+      console.log(`[compile.gpu.test] all ${PATCH_COUNT} patches compiled and linked`);
+    },
+    compileTimeoutMs,
+  );
 });

@@ -8,7 +8,17 @@ import { serializePatch } from './schema';
 import type { VisualOperator, VisualPatch } from './types';
 import { validatePatch } from './validate';
 
-const SOURCE_IDS = ['grid', 'points', 'branch', 'cells'] as const;
+const SOURCE_IDS = [
+  'grid',
+  'points',
+  'branch',
+  'cells',
+  'tiles',
+  'wires',
+  'concentric',
+  'grille',
+  'stripes',
+] as const;
 
 /** Sources used by derive buildRoutes (validate ∩ modulation). */
 const ROUTE_AUDIO_SOURCES = new Set([
@@ -126,9 +136,9 @@ describe('synth/derive', () => {
   });
 
   describe('source coverage', () => {
-    it('all 4 sources (grid, points, branch, cells) appear across many seeds', () => {
+    it('all 9 sources (grid, points, branch, cells, tiles, wires, concentric, grille, stripes) appear across many seeds', () => {
       const seen = new Set<string>();
-      const maxSeeds = 2000;
+      const maxSeeds = 5000;
       for (let i = 0; i < maxSeeds && seen.size < SOURCE_IDS.length; i++) {
         const patch = derivePatch(`source-cover-${i}`, { catalog: inlineCatalog });
         for (const op of sourceOps(patch)) {
@@ -142,14 +152,19 @@ describe('synth/derive', () => {
   });
 
   describe('source distribution (report)', () => {
-    it('logs counts per source id over 100 seeds', () => {
+    it('logs counts per source id over 300 seeds', () => {
       const counts: Record<string, number> = {
         grid: 0,
         points: 0,
         branch: 0,
         cells: 0,
+        tiles: 0,
+        wires: 0,
+        concentric: 0,
+        grille: 0,
+        stripes: 0,
       };
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 300; i++) {
         const patch = derivePatch(`dist-${i}`, { catalog: inlineCatalog });
         for (const op of sourceOps(patch)) {
           counts[op.generatorId] = (counts[op.generatorId] ?? 0) + 1;
@@ -158,12 +173,12 @@ describe('synth/derive', () => {
       const report = Object.entries(counts)
         .map(([id, n]) => `${id}=${n}`)
         .join(', ');
-      console.log(`[derive] source distribution over 100 seeds (operator occurrences): ${report}`);
-      // Every real source should appear at least once in 100 seeds with high probability;
+      console.log(`[derive] source distribution over 300 seeds (operator occurrences): ${report}`);
+      // Every real source should appear at least once in 300 seeds with high probability;
       // soft-check total mass and that keys are populated.
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
-      expect(total).toBeGreaterThanOrEqual(100); // at least 1 source each
-      expect(Object.keys(counts).length).toBeGreaterThanOrEqual(4);
+      expect(total).toBeGreaterThanOrEqual(300); // at least 1 source each
+      expect(Object.keys(counts).length).toBeGreaterThanOrEqual(9);
     });
   });
 
