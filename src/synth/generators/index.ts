@@ -4,34 +4,51 @@
  */
 import type { GeneratorDefinition } from '../types';
 import { branchGenerator } from './branch';
+import { brakeLightRainGenerator } from './brakeLightRain';
+import { busJacquardGenerator } from './busJacquard';
 import { cellsGenerator } from './cells';
 import { cheapLedGenerator } from './cheapLed';
 import { concentricGenerator } from './concentric';
+import { coneFieldGenerator } from './coneField';
 import { crtGenerator } from './crt';
 import { dropoutGenerator } from './dropout';
+import { fanGuardGenerator } from './fanGuard';
 import { flowGenerator } from './flow';
 import { fluorescentGenerator } from './fluorescent';
+import { flyoverBeamsGenerator } from './flyoverBeams';
+import { freezerCyanGenerator } from './freezerCyan';
 import { gridGenerator } from './grid';
 import { grilleGenerator } from './grille';
+import { humidityLensGenerator } from './humidityLens';
 import { inkGenerator } from './ink';
 import { invertGenerator } from './invert';
 import { kaleidoGenerator } from './kaleido';
+import { minidvFadeGenerator } from './minidvFade';
 import { mirrorGenerator } from './mirror';
 import { misprintGenerator } from './misprint';
+import { mooringRopeGenerator } from './mooringRope';
 import { neonGenerator } from './neon';
+import { nightMarketCurtainGenerator } from './nightMarketCurtain';
 import { noiseGenerator } from './noise';
 import { pixelateGenerator } from './pixelate';
 import { pointsGenerator } from './points';
+import { polymeterGenerator } from './polymeter';
 import { posterizeGenerator } from './posterize';
 import { pulseGenerator } from './pulse';
+import { qilouShutterGenerator } from './qilouShutter';
 import { repeatGenerator } from './repeat';
 import { rippleGenerator } from './ripple';
+import { roadStitchGenerator } from './roadStitch';
 import { sliceGenerator } from './slice';
 import { sodiumGenerator } from './sodium';
 import { stripesGenerator } from './stripes';
 import { swayGenerator } from './sway';
+import { tapeWowGenerator } from './tapeWow';
+import { templeZigzagGenerator } from './templeZigzag';
 import { thresholdGenerator } from './threshold';
 import { tilesGenerator } from './tiles';
+import { typhoonShearGenerator } from './typhoonShear';
+import { viaductJointsGenerator } from './viaductJoints';
 import { vortexGenerator } from './vortex';
 import { wetConcreteGenerator } from './wetConcrete';
 import { wiresGenerator } from './wires';
@@ -47,12 +64,26 @@ export { wiresGenerator, wiresDef } from './wires';
 export { concentricGenerator, concentricDef } from './concentric';
 export { grilleGenerator, grilleDef } from './grille';
 export { stripesGenerator, stripesDef } from './stripes';
+export { qilouShutterGenerator, qilouShutterDef } from './qilouShutter';
+export { nightMarketCurtainGenerator, nightMarketCurtainDef } from './nightMarketCurtain';
+export { roadStitchGenerator, roadStitchDef } from './roadStitch';
+export { flyoverBeamsGenerator, flyoverBeamsDef } from './flyoverBeams';
+export { fanGuardGenerator, fanGuardDef } from './fanGuard';
+export { mooringRopeGenerator, mooringRopeDef } from './mooringRope';
+export { viaductJointsGenerator, viaductJointsDef } from './viaductJoints';
+export { busJacquardGenerator, busJacquardDef } from './busJacquard';
+export { templeZigzagGenerator, templeZigzagDef } from './templeZigzag';
+export { polymeterGenerator, polymeterDef } from './polymeter';
 export { noiseGenerator, noiseDef } from './noise';
 export { vortexGenerator, vortexDef } from './vortex';
 export { flowGenerator, flowDef } from './flow';
 export { rippleGenerator, rippleDef } from './ripple';
 export { swayGenerator, swayDef } from './sway';
 export { pulseGenerator, pulseDef } from './pulse';
+export { typhoonShearGenerator, typhoonShearDef } from './typhoonShear';
+export { tapeWowGenerator, tapeWowDef } from './tapeWow';
+export { coneFieldGenerator, coneFieldDef } from './coneField';
+export { humidityLensGenerator, humidityLensDef } from './humidityLens';
 export { mirrorGenerator, mirrorDef } from './mirror';
 export { repeatGenerator, repeatDef } from './repeat';
 export { pixelateGenerator, pixelateDef } from './pixelate';
@@ -70,6 +101,9 @@ export { fluorescentGenerator, fluorescentDef } from './fluorescent';
 export { wetConcreteGenerator, wetConcreteDef } from './wetConcrete';
 export { misprintGenerator, misprintDef } from './misprint';
 export { sodiumGenerator, sodiumDef } from './sodium';
+export { brakeLightRainGenerator, brakeLightRainDef } from './brakeLightRain';
+export { freezerCyanGenerator, freezerCyanDef } from './freezerCyan';
+export { minidvFadeGenerator, minidvFadeDef } from './minidvFade';
 
 const ALL: InlineGenerator[] = [
   // sources
@@ -82,6 +116,16 @@ const ALL: InlineGenerator[] = [
   concentricGenerator,
   grilleGenerator,
   stripesGenerator,
+  qilouShutterGenerator,
+  nightMarketCurtainGenerator,
+  roadStitchGenerator,
+  flyoverBeamsGenerator,
+  fanGuardGenerator,
+  mooringRopeGenerator,
+  viaductJointsGenerator,
+  busJacquardGenerator,
+  templeZigzagGenerator,
+  polymeterGenerator,
   // fields
   noiseGenerator,
   vortexGenerator,
@@ -89,6 +133,10 @@ const ALL: InlineGenerator[] = [
   rippleGenerator,
   swayGenerator,
   pulseGenerator,
+  typhoonShearGenerator,
+  tapeWowGenerator,
+  coneFieldGenerator,
+  humidityLensGenerator,
   // modifiers (coord + value)
   mirrorGenerator,
   repeatGenerator,
@@ -108,6 +156,9 @@ const ALL: InlineGenerator[] = [
   wetConcreteGenerator,
   misprintGenerator,
   sodiumGenerator,
+  brakeLightRainGenerator,
+  freezerCyanGenerator,
+  minidvFadeGenerator,
 ];
 
 /** Built-in inline generator catalog (Phase 1 generators). */

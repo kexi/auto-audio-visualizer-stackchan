@@ -8,17 +8,10 @@ import { serializePatch } from './schema';
 import type { VisualOperator, VisualPatch } from './types';
 import { validatePatch } from './validate';
 
-const SOURCE_IDS = [
-  'grid',
-  'points',
-  'branch',
-  'cells',
-  'tiles',
-  'wires',
-  'concentric',
-  'grille',
-  'stripes',
-] as const;
+const SOURCE_IDS = inlineCatalog
+  .all()
+  .filter((g) => g.def.category === 'source')
+  .map((g) => g.def.id);
 
 /** Sources used by derive buildRoutes (validate ∩ modulation). */
 const ROUTE_AUDIO_SOURCES = new Set([
@@ -136,13 +129,14 @@ describe('synth/derive', () => {
   });
 
   describe('source coverage', () => {
-    it('all 9 sources (grid, points, branch, cells, tiles, wires, concentric, grille, stripes) appear across many seeds', () => {
+    it('all catalog sources appear across many seeds', () => {
       const seen = new Set<string>();
-      const maxSeeds = 5000;
-      for (let i = 0; i < maxSeeds && seen.size < SOURCE_IDS.length; i++) {
+      const maxSeeds = 8000;
+      const target = new Set(SOURCE_IDS);
+      for (let i = 0; i < maxSeeds && seen.size < target.size; i++) {
         const patch = derivePatch(`source-cover-${i}`, { catalog: inlineCatalog });
         for (const op of sourceOps(patch)) {
-          seen.add(op.generatorId);
+          if (target.has(op.generatorId)) seen.add(op.generatorId);
         }
       }
       for (const id of SOURCE_IDS) {
@@ -153,17 +147,7 @@ describe('synth/derive', () => {
 
   describe('source distribution (report)', () => {
     it('logs counts per source id over 300 seeds', () => {
-      const counts: Record<string, number> = {
-        grid: 0,
-        points: 0,
-        branch: 0,
-        cells: 0,
-        tiles: 0,
-        wires: 0,
-        concentric: 0,
-        grille: 0,
-        stripes: 0,
-      };
+      const counts: Record<string, number> = Object.fromEntries(SOURCE_IDS.map((id) => [id, 0]));
       for (let i = 0; i < 300; i++) {
         const patch = derivePatch(`dist-${i}`, { catalog: inlineCatalog });
         for (const op of sourceOps(patch)) {
@@ -174,11 +158,10 @@ describe('synth/derive', () => {
         .map(([id, n]) => `${id}=${n}`)
         .join(', ');
       console.log(`[derive] source distribution over 300 seeds (operator occurrences): ${report}`);
-      // Every real source should appear at least once in 300 seeds with high probability;
-      // soft-check total mass and that keys are populated.
+      // soft-check total mass and that catalog sources are tracked.
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
       expect(total).toBeGreaterThanOrEqual(300); // at least 1 source each
-      expect(Object.keys(counts).length).toBeGreaterThanOrEqual(9);
+      expect(Object.keys(counts).length).toBe(SOURCE_IDS.length);
     });
   });
 
@@ -236,7 +219,7 @@ describe('synth/derive', () => {
 
     it('adding a fake extra source: change rate ≈ 1/(n+1) and low', () => {
       const fullSources = inlineCatalog.all().filter((g) => g.def.category === 'source');
-      const nSources = fullSources.length; // 4
+      const nSources = fullSources.length;
       const fake: InlineGenerator = {
         def: {
           id: 'fake-source-zz',
@@ -288,11 +271,11 @@ describe('synth/derive', () => {
           `theory≈${(expected * 100).toFixed(2)}%`,
       );
 
-      // Should be clearly better than reindex chaos; near 1/(n+1) ≈ 20%.
+      // Should be clearly better than reindex chaos; near 1/(n+1).
       expect(changeRate).toBeLessThan(0.45);
-      expect(changeRate).toBeGreaterThan(0.05);
+      expect(changeRate).toBeGreaterThan(expected * 0.4);
       // Fake win rate as primary should also be in a plausible band around 1/(n+1).
-      expect(fakeRate).toBeGreaterThan(0.05);
+      expect(fakeRate).toBeGreaterThan(expected * 0.4);
       expect(fakeRate).toBeLessThan(0.45);
     });
   });
