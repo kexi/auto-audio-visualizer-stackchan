@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SynthControlState } from '../synth/control';
 import { getSynthControl } from '../synth/control';
+import { inlineCatalog, stampDef } from '../synth/generators';
+import type { ImageMeta } from '../synth/images';
+import { listImages, loadImages, putImage, subscribeImages } from '../synth/images';
 import { serializePatch } from '../synth/schema';
 import type {
   PerformanceTimeline,
@@ -8,7 +11,7 @@ import type {
   TimeAnchor,
   VisualEvent,
 } from '../synth/timeline';
-import type { TransitionSpec, VisualPatch } from '../synth/types';
+import type { ImageRef, TransitionSpec, VisualOperator, VisualPatch } from '../synth/types';
 import { DEFAULT_TRANSITION } from '../synth/types';
 import { randomSeed } from '../variation/generate';
 
@@ -104,6 +107,68 @@ function sortedEvents(tl: PerformanceTimeline): VisualEvent[] {
 
 function numberOr(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
+}
+
+/** Operator id used for the stamp this panel inserts. */
+const STAMP_OP_ID = 'imgStamp';
+/** stampDef declares exactly one slot; the panel only ever fills that one. */
+const STAMP_SLOT = stampDef.textures?.[0] ?? 'image';
+/** validate.ts の source 上限。超えると提案が丸ごと落ちるので、こちら側で守る。 */
+const MAX_SOURCES = 2;
+
+function isSource(op: VisualOperator): boolean {
+  return inlineCatalog.get(op.generatorId)?.def.category === 'source';
+}
+
+function stampOperator(id: string): VisualOperator {
+  const parameters: Record<string, number | string | boolean> = {};
+  for (const p of stampDef.parameters) parameters[p.id] = p.default;
+  return {
+    id,
+    generatorId: stampDef.id,
+    generatorVersion: stampDef.version,
+    parameters,
+  };
+}
+
+/**
+ * Put the picture into the running patch.
+ *
+ * A stamp already in the patch is re-pointed at the new image; otherwise one is
+ * inserted as the first operator (stage order is Source → … → Material). When
+ * that would exceed the source limit the last existing source steps aside —
+ * along with any route aimed at it, which would otherwise dangle and sink the
+ * whole proposal.
+ */
+function patchWithStamp(patch: VisualPatch, ref: ImageRef): VisualPatch {
+  const existing = patch.operators.find((op) => op.generatorId === stampDef.id);
+  const opId = existing ? existing.id : STAMP_OP_ID;
+
+  let operators = patch.operators;
+  if (!existing) {
+    const sources = patch.operators.filter(isSource);
+    const evicted = sources.length >= MAX_SOURCES ? sources[sources.length - 1] : undefined;
+    operators = [stampOperator(opId), ...patch.operators.filter((op) => op.id !== evicted?.id)];
+  }
+
+  const droppedIds = new Set(
+    patch.operators.filter((op) => !operators.includes(op)).map((op) => op.id),
+  );
+  const routes =
+    droppedIds.size === 0
+      ? patch.routes
+      : patch.routes.filter(
+          (r) =>
+            !droppedIds.has(r.target.split('.')[0] ?? '') &&
+            !droppedIds.has(r.source.replace(/^operator:/, '')),
+        );
+
+  return {
+    ...patch,
+    operators,
+    routes,
+    images: { ...patch.images, [`${opId}.${STAMP_SLOT}`]: ref },
+  };
 }
 
 export function TimelinePanel(props: TimelinePanelProps): React.ReactElement {
@@ -223,6 +288,85 @@ export function TimelinePanel(props: TimelinePanelProps): React.ReactElement {
 
   // ---- External trigger ----
   const [fireId, setFireId] = useState('drop');
+
+  // ---- Images ----
+  const [images, setImages] = useState<ImageMeta[]>(() => listImages());
+  const [imageIssues, setImageIssues] = useState<string[]>([]);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    setImages(listImages());
+    const unsubscribe = subscribeImages(() => setImages(listImages()));
+    // Anything stored in a previous session comes back here.
+    void loadImages();
+    return unsubscribe;
+  }, []);
+
+  const addImageFiles = useCallback(async (files: readonly File[]): Promise<void> => {
+    const issues: string[] = [];
+    for (const file of files) {
+      try {
+        const meta = await putImage(file.name, file);
+        if (meta.width === 0 || meta.height === 0) {
+          issues.push(`${file.name}: could not be decoded as an image`);
+        }
+      } catch (err) {
+        issues.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    setImageIssues(issues);
+  }, []);
+
+  // Page-wide drop: during a set the panel is a small target, and the natural
+  // gesture is "throw the logo at the window".
+  useEffect(() => {
+    const isFileDrag = (e: DragEvent): boolean =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+
+    const onDragOver = (e: DragEvent): void => {
+      if (!isFileDrag(e)) return;
+      // Without this the browser navigates to the dropped file instead.
+      e.preventDefault();
+      setDragging(true);
+    };
+    const onDragLeave = (e: DragEvent): void => {
+      // relatedTarget === null means the pointer actually left the window.
+      if (e.relatedTarget === null) setDragging(false);
+    };
+    const onDrop = (e: DragEvent): void => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      setDragging(false);
+      const files = Array.from(e.dataTransfer?.files ?? []).filter(
+        (f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif)$/i.test(f.name),
+      );
+      if (files.length === 0) {
+        setImageIssues(['dropped files are not images']);
+        return;
+      }
+      void addImageFiles(files);
+    };
+
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [addImageFiles]);
+
+  const useAsStamp = (meta: ImageMeta): void => {
+    const current = control.getState().currentPatch;
+    if (!current) {
+      setImageIssues(['no active synth scene — switch to Semantic Synth']);
+      return;
+    }
+    const next = patchWithStamp(current, { name: meta.name, hash: meta.hash });
+    const res = control.proposePatch(JSON.parse(serializePatch(next)) as unknown);
+    setImageIssues(res.ok ? [] : res.issues.length > 0 ? res.issues : ['patch rejected']);
+  };
 
   // ---- Recording ----
   const [recordIssues, setRecordIssues] = useState<string[]>([]);
@@ -509,6 +653,61 @@ export function TimelinePanel(props: TimelinePanelProps): React.ReactElement {
               Fire
             </button>
           </div>
+        </div>
+
+        {/* ---- Images ---- */}
+        <div className="tl-section" data-testid="tl-images">
+          <div className="row-label">
+            <span>Images</span>
+            <span className="row-value">{dragging ? 'drop to load' : images.length}</span>
+          </div>
+          <div className="tl-form-row">
+            <input
+              type="file"
+              className="tl-file"
+              accept="image/*,.svg"
+              multiple
+              data-testid="tl-image-file"
+              aria-label="Load image"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) void addImageFiles(files);
+                // Allow re-selecting the same file.
+                e.target.value = '';
+              }}
+            />
+          </div>
+          {images.length === 0 ? (
+            <div className="tl-note">
+              drop a PNG / JPG / WebP / SVG anywhere on the page, or pick one above
+            </div>
+          ) : (
+            <div className="tl-rows">
+              {images.map((img) => (
+                <div className="tl-row" data-testid="tl-image-row" key={img.hash}>
+                  <span className="tl-intent" title={`${img.hash} · ${img.width}×${img.height}`}>
+                    {img.name}
+                  </span>
+                  <span className="tl-anchor">{img.hash.slice(0, 8)}</span>
+                  <button
+                    type="button"
+                    className="btn small"
+                    data-testid="tl-image-use"
+                    onClick={() => useAsStamp(img)}
+                  >
+                    stamp に使う
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {imageIssues.length > 0 && (
+            <ul className="tl-issues" data-testid="tl-image-issues">
+              {imageIssues.map((issue, i) => (
+                <li key={i}>{issue}</li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* ---- Recording ---- */}

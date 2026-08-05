@@ -128,7 +128,10 @@ function fail(error: string): DispatchResult {
  * シーン切り替えを跨いで有効とはいえ、テストから差し替えられる形にしておきたい
  * ためと、将来 facade が差し替え可能になったときに追随させるため。
  */
-function dispatch(method: string, params: Record<string, unknown> | undefined): DispatchResult {
+function dispatch(
+  method: string,
+  params: Record<string, unknown> | undefined,
+): DispatchResult | Promise<DispatchResult> {
   const control = getSynthControl();
   switch (method) {
     case 'getState':
@@ -151,6 +154,19 @@ function dispatch(method: string, params: Record<string, unknown> | undefined): 
       if (typeof seed !== 'string') return fail('proposeSeed requires params.seed as string');
       control.proposeSeed(seed);
       return ok({ ok: true });
+    }
+
+    case 'setImage': {
+      const name = params?.name;
+      const bytes = params?.bytesBase64;
+      const mime = params?.mime;
+      if (typeof name !== 'string') return fail('setImage requires params.name as string');
+      if (typeof bytes !== 'string') return fail('setImage requires params.bytesBase64 as string');
+      // ハッシュ計算と decode は非同期なので、ここだけ Promise を返す。
+      // 応答は handleBridgeMessage が解決してから送る。
+      return control
+        .setImage(name, bytes, typeof mime === 'string' ? mime : '')
+        .then((result) => ok(result));
     }
 
     case 'applyTimelineOp': {
@@ -191,8 +207,14 @@ function dispatch(method: string, params: Record<string, unknown> | undefined): 
   }
 }
 
-/** 受信フレーム1件を処理して、返すべきレスポンスフレームを返す（返さない場合は null）。 */
-export function handleBridgeMessage(raw: string): object | null {
+/**
+ * 受信フレーム1件を処理して、返すべきレスポンスフレームを返す（返さない場合は null）。
+ *
+ * 同期で答えられる method は同期のまま返す（既存の呼び出し側とテストを変えない）。
+ * setImage のように待ちがある method だけ Promise を返すので、送信側は
+ * Promise.resolve() で受けること。
+ */
+export function handleBridgeMessage(raw: string): object | null | Promise<object | null> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -212,9 +234,16 @@ export function handleBridgeMessage(raw: string): object | null {
       ? (rawParams as Record<string, unknown>)
       : undefined;
 
+  const toFrame = (out: DispatchResult): object =>
+    out.ok ? { id, result: out.result } : { id, error: out.error };
+
   try {
     const out = dispatch(frame.method, params);
-    return out.ok ? { id, result: out.result } : { id, error: out.error };
+    if (out instanceof Promise) {
+      // 非同期 method でも、拒否で接続を落とさないのは同期と同じ扱い。
+      return out.then(toFrame, (e: unknown) => ({ id, error: String(e) }));
+    }
+    return toFrame(out);
   } catch (e) {
     // ハンドラの例外で WebSocket を落とさない。シーン側の失敗はあくまで
     // 「そのリクエストの失敗」として返し、接続は生かしたままにする。
@@ -291,7 +320,15 @@ export function initBridgeClient(): BridgeClientHandle | null {
     ws.onmessage = (ev: MessageEvent): void => {
       if (typeof ev.data !== 'string') return;
       const response = handleBridgeMessage(ev.data);
-      if (response !== null) ws.send(JSON.stringify(response));
+      if (response === null) return;
+      if (response instanceof Promise) {
+        void response.then((resolved) => {
+          // 待っている間に切れていることがあるので、送る前に現行ソケットか確かめる。
+          if (resolved !== null && socket === ws) ws.send(JSON.stringify(resolved));
+        });
+        return;
+      }
+      ws.send(JSON.stringify(response));
     };
 
     ws.onclose = (): void => handleDown(ws);

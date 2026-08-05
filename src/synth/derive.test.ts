@@ -8,9 +8,20 @@ import { serializePatch } from './schema';
 import type { VisualOperator, VisualPatch } from './types';
 import { validatePatch } from './validate';
 
+/**
+ * Sources the seed gacha may pick. Generators with a texture input are excluded
+ * on purpose: a picture is something the operator brings deliberately, so derive
+ * must never make one appear (or vanish) on its own.
+ */
 const SOURCE_IDS = inlineCatalog
   .all()
-  .filter((g) => g.def.category === 'source')
+  .filter((g) => g.def.category === 'source' && (g.def.textures?.length ?? 0) === 0)
+  .map((g) => g.def.id);
+
+/** Every generator that declares a texture slot — none of these may be derived. */
+const TEXTURED_IDS = inlineCatalog
+  .all()
+  .filter((g) => (g.def.textures?.length ?? 0) > 0)
   .map((g) => g.def.id);
 
 /** Sources used by derive buildRoutes (validate ∩ modulation). */
@@ -142,6 +153,29 @@ describe('synth/derive', () => {
       for (const id of SOURCE_IDS) {
         expect(seen.has(id), `source "${id}" never selected in ${maxSeeds} seeds`).toBe(true);
       }
+    });
+  });
+
+  describe('texture generators are never derived', () => {
+    it('catalog actually has at least one (otherwise this test proves nothing)', () => {
+      expect(TEXTURED_IDS).toContain('stamp');
+    });
+
+    it('2000 seeds never select a generator with a texture slot', () => {
+      const textured = new Set(TEXTURED_IDS);
+      const offenders: string[] = [];
+      for (let i = 0; i < 2000; i++) {
+        const seed = `no-texture-${i}`;
+        const patch = derivePatch(seed, { catalog: inlineCatalog });
+        for (const op of patch.operators) {
+          if (textured.has(op.generatorId)) offenders.push(`${seed}: ${op.generatorId}`);
+        }
+        // A derived patch never carries image references either.
+        expect(patch.images, `seed ${seed} produced images`).toBeUndefined();
+      }
+      expect(offenders, `derived patches contained texture generators: ${offenders[0]}`).toEqual(
+        [],
+      );
     });
   });
 

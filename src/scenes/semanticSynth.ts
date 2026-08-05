@@ -21,6 +21,14 @@ import { derivePatch } from '../synth/derive';
 import { assemblePatch, SEED_UNIFORM, type AssembledShader } from '../synth/gl/assemble';
 import { allGeneratorDefinitions, inlineCatalog } from '../synth/generators';
 import {
+  base64ToBlob,
+  type DecodedImage,
+  getImage,
+  loadImages,
+  putImage,
+  subscribeImages,
+} from '../synth/images';
+import {
   applyModulation,
   createModulationEngine,
   type ModulationEngine,
@@ -170,6 +178,18 @@ let blit: Compiled | null = null;
 /** 直近フレームの実効解像度スケール。 */
 let lastScale = 1;
 
+// ---- image textures ----
+/**
+ * Content hash → GL texture. Keyed by hash rather than by slot so the same
+ * picture uploads once no matter how many operators (or decks) point at it.
+ */
+const textureCache = new Map<string, WebGLTexture>();
+/** 1×1 transparent texel. 画像が無いスロットに刺さり、stamp を v=0 に落とす。 */
+let dummyTexture: WebGLTexture | null = null;
+/** 解決できなかった参照。警告はキーごとに1回だけ出す（毎フレーム出さない）。 */
+const warnedImages = new Set<string>();
+let unsubscribeImages: (() => void) | null = null;
+
 // ---- timeline / external control ----
 let timeline: PerformanceTimeline = { lockedUntilSec: 0, events: [] };
 let scheduler: SchedulerState = createSchedulerState();
@@ -219,6 +239,138 @@ function setParamUniform(
     }
   }
   void gl;
+}
+
+/**
+ * The fallback bound to any slot without a usable image.
+ *
+ * A transparent texel makes the contract fall out of the shader for free:
+ * stamp multiplies by alpha, so a missing image renders as an empty field
+ * rather than as a black rectangle or a GL error.
+ */
+function ensureDummyTexture(gl: WebGL2RenderingContext): WebGLTexture | null {
+  if (dummyTexture) return dummyTexture;
+  const tex = gl.createTexture();
+  if (!tex) return null;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    1,
+    1,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    new Uint8Array([0, 0, 0, 0]),
+  );
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  dummyTexture = tex;
+  return tex;
+}
+
+/**
+ * Upload decoded pixels to a fresh texture.
+ *
+ * LINEAR without mipmaps and CLAMP_TO_EDGE on both axes: logos are arbitrary
+ * sizes, and non-power-of-two textures are only complete under exactly these
+ * settings.
+ *
+ * UNPACK_FLIP_Y_WEBGL is deliberately left alone: it is *ignored* for
+ * ImageBitmap sources, so synth/images already hands over bottom-row-first
+ * pixels (see its orientation contract). Setting it here would flip canvas
+ * sources — rasterized SVGs — and nothing else.
+ */
+function uploadTexture(gl: WebGL2RenderingContext, decoded: DecodedImage): WebGLTexture | null {
+  const tex = gl.createTexture();
+  if (!tex) return null;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // stamp reads luminance and alpha separately, so the alpha must stay straight.
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, decoded);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return tex;
+}
+
+function warnMissingImage(key: string, detail: string): void {
+  if (warnedImages.has(key)) return;
+  warnedImages.add(key);
+  console.warn(`[semantic-synth] texture slot "${key}": ${detail}; drawing empty`);
+}
+
+/** Resolve a Patch image reference to an uploaded texture, or null. */
+function resolveTexture(
+  gl: WebGL2RenderingContext,
+  key: string,
+  ref: { name: string; hash: string },
+): { tex: WebGLTexture; w: number; h: number } | null {
+  const record = getImage(ref.hash) ?? getImage(ref.name);
+  if (!record) {
+    warnMissingImage(key, `image "${ref.name}" (${ref.hash.slice(0, 8)}) is not loaded`);
+    return null;
+  }
+  if (!record.decoded) {
+    warnMissingImage(key, `image "${record.name}" could not be decoded`);
+    return null;
+  }
+  const cached = textureCache.get(record.hash);
+  if (cached) return { tex: cached, w: record.width, h: record.height };
+
+  const tex = uploadTexture(gl, record.decoded);
+  if (!tex) {
+    warnMissingImage(key, `GL texture upload failed for "${record.name}"`);
+    return null;
+  }
+  textureCache.set(record.hash, tex);
+  return { tex, w: record.width, h: record.height };
+}
+
+/**
+ * Bind one texture unit per declared slot, in the assembler's declaration order.
+ * Unassigned or unresolvable slots get the transparent dummy so the draw always
+ * has a complete texture on every sampler.
+ */
+function bindTextures(
+  gl: WebGL2RenderingContext,
+  uni: Uniforms,
+  assembled: AssembledShader,
+  patch: VisualPatch,
+): void {
+  if (assembled.textures.length === 0) return;
+
+  let unit = 0;
+  for (const slot of assembled.textures) {
+    const ref = patch.images?.[slot.key];
+    if (!ref) warnMissingImage(slot.key, 'no image assigned');
+    const resolved = ref ? resolveTexture(gl, slot.key, ref) : null;
+    const tex = resolved ? resolved.tex : ensureDummyTexture(gl);
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    uni.i1(slot.name, unit);
+    uni.f2(slot.sizeName, resolved ? resolved.w : 1, resolved ? resolved.h : 1);
+    unit++;
+  }
+  // Leave unit 0 active: the blit pass and every other scene assume it.
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+/** Free every image texture (context teardown). */
+function disposeTextures(gl: WebGL2RenderingContext): void {
+  for (const tex of textureCache.values()) gl.deleteTexture(tex);
+  textureCache.clear();
+  if (dummyTexture) {
+    gl.deleteTexture(dummyTexture);
+    dummyTexture = null;
+  }
+  warnedImages.clear();
 }
 
 /** True while a live deck still needs this program — eviction must skip it. */
@@ -580,6 +732,8 @@ function drawDeck(
     setParamUniform(gl, uni, name, paramDef.kind, value, paramDef.options);
   }
 
+  bindTextures(gl, uni, assembled, patch);
+
   if (vao) drawFullscreen(gl, vao);
 }
 
@@ -678,6 +832,36 @@ const control: SynthControlBackend = {
     notifySynthControlChanged();
   },
 
+  async setImage(name: string, bytesBase64: string, mime: string) {
+    const trimmed = name.trim();
+    if (trimmed === '') return { ok: false, issues: ['image name must not be empty'] };
+
+    let blob: Blob;
+    try {
+      blob = base64ToBlob(bytesBase64, mime);
+    } catch (e) {
+      return {
+        ok: false,
+        issues: [`invalid base64 payload: ${e instanceof Error ? e.message : String(e)}`],
+      };
+    }
+    if (blob.size === 0) return { ok: false, issues: ['image payload is empty'] };
+
+    try {
+      const meta = await putImage(trimmed, blob);
+      if (meta.width === 0 || meta.height === 0) {
+        return { ok: false, issues: [`"${trimmed}" could not be decoded as an image`] };
+      }
+      // A newly available image can rescue a slot that was drawing empty; the
+      // image-store subscription clears the warned set, so it can warn again if
+      // the same slot breaks later.
+      notifySynthControlChanged();
+      return { ok: true, issues: [], hash: meta.hash, name: meta.name };
+    } catch (e) {
+      return { ok: false, issues: [e instanceof Error ? e.message : String(e)] };
+    }
+  },
+
   applyTimelineOp(op: TimelineOp) {
     const result = applyOp(timeline, op, lastCtx);
     if (!result.ok) return { ok: false, issue: result.issue };
@@ -758,6 +942,21 @@ export const semanticSynthScene: GlScene = {
     scaleTarget = null;
     lastScale = 1;
     quality = createQualityController();
+
+    // Textures belong to the context that just went away — drop the handles
+    // without deleting them (deleting against the new context is a no-op at
+    // best) and let the next frame re-upload from the image store.
+    textureCache.clear();
+    dummyTexture = null;
+    warnedImages.clear();
+    // Persisted images have to come back before a Patch that references them can
+    // draw. Fire and forget: until it lands the slots fall back to the dummy.
+    void loadImages();
+    unsubscribeImages?.();
+    // A late-arriving image should be able to warn again if it disappears later.
+    unsubscribeImages = subscribeImages(() => {
+      warnedImages.clear();
+    });
 
     // timeline / scheduler / recorder は GL コンテキストのリソースではなく演奏中の
     // セッション状態なので、ここではリセットしない。init はコンテキストロスト
@@ -861,6 +1060,9 @@ export const semanticSynthScene: GlScene = {
   dispose(gl: WebGL2RenderingContext) {
     unregisterControl?.();
     unregisterControl = null;
+    unsubscribeImages?.();
+    unsubscribeImages = null;
+    disposeTextures(gl);
     // Session state (timeline / scheduler / recorder) is only ever dropped here,
     // when the scene itself goes away — not in init(), which also runs on
     // context-restore and must not wipe out a performance in progress.

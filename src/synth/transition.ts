@@ -202,6 +202,12 @@ function sampleSameTopology(
     palette: lerpPalette(from.palette, to.palette, paletteT),
     composition: lerpComposition(from.composition, to.composition, paramT),
     routes: lerpRoutes(from.routes, to.routes, modT, done),
+    // Image assignments are discrete, like seed and qualityTier: they take the
+    // target's value at once. Interpolating them is meaningless, and dropping
+    // them would blank the picture for the whole morph and snap it back at the
+    // end. The key stays absent when the target has none, so texture-free
+    // patches serialize exactly as before.
+    ...(to.images ? { images: to.images } : {}),
   };
 
   return {

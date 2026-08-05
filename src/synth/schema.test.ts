@@ -226,4 +226,58 @@ describe('synth/schema', () => {
       expect(parsed.ok).toBe(true);
     });
   });
+
+  describe('images (任意フィールド)', () => {
+    const images = { 'src1.image': { name: 'logo.png', hash: 'ff00' } };
+
+    it('images 無しの Patch は今までどおり通り、キーも生えない', () => {
+      const parsed = parsePatch(basePatch());
+      expect(parsed.ok).toBe(true);
+      expect(parsed.ok && 'images' in parsed.patch).toBe(false);
+      expect(serializePatch(basePatch())).not.toContain('images');
+    });
+
+    it('images 付きの Patch を parse して同じ内容が残る', () => {
+      const parsed = parsePatch(basePatch({ images }));
+      expect(parsed.ok).toBe(true);
+      expect(parsed.ok && parsed.patch.images).toEqual(images);
+    });
+
+    it('schemaVersion は 1 のまま（後方互換な追加なので migration 不要）', () => {
+      const parsed = parsePatch(basePatch({ images }));
+      expect(parsed.ok && parsed.patch.schemaVersion).toBe(1);
+    });
+
+    it('serialize は images の中まで再帰的にキー順を固定する', () => {
+      const a = serializePatch(
+        basePatch({
+          images: {
+            'b.image': { name: 'b.png', hash: '2' },
+            'a.image': { name: 'a.png', hash: '1' },
+          },
+        }),
+      );
+      const b = serializePatch(
+        basePatch({
+          images: {
+            'a.image': { hash: '1', name: 'a.png' },
+            'b.image': { hash: '2', name: 'b.png' },
+          },
+        }),
+      );
+      expect(a).toBe(b);
+      expect(a).toContain('"images":{"a.image":{"hash":"1","name":"a.png"}');
+    });
+
+    it('参照の形が壊れていれば parse で落ちる', () => {
+      const missingHash = parsePatch(
+        basePatch({ images: { 'src1.image': { name: 'logo.png' } as never } }),
+      );
+      expect(missingHash.ok).toBe(false);
+      const emptyName = parsePatch(
+        basePatch({ images: { 'src1.image': { name: '', hash: 'f0' } } }),
+      );
+      expect(emptyName.ok).toBe(false);
+    });
+  });
 });

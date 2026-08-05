@@ -34,6 +34,16 @@ export interface EmitContext {
   nsUniform: string;
   /** Seed u32 uniform name (shared across Patch). */
   seedUniform: string;
+  /**
+   * slot → sampler2D uniform name (u_<opId>_tex_<slot>).
+   * def.textures で宣言したスロットのみ。未宣言のスロットを要求すると throw する。
+   */
+  texUniform: (slot: string) => string;
+  /**
+   * slot → バインドされた画像の実ピクセルサイズ vec2 の uniform 名。
+   * 画像が無いときはダミー（1x1）のサイズが入るので、除算前に max() で守ること。
+   */
+  texSizeUniform: (slot: string) => string;
 }
 
 /** Catalog of inline generators keyed by generator id. */

@@ -86,6 +86,7 @@ import { sliceGenerator } from './slice';
 import { sodiumGenerator } from './sodium';
 import { spinGenerator } from './spin';
 import { spiralGenerator } from './spiral';
+import { stampGenerator } from './stamp';
 import { stripesGenerator } from './stripes';
 import { sunbleachedTarpGenerator } from './sunbleachedTarp';
 import { sunburstGenerator } from './sunburst';
@@ -206,6 +207,7 @@ export { sunbleachedTarpGenerator, sunbleachedTarpDef } from './sunbleachedTarp'
 export { risoGenerator, risoDef } from './riso';
 export { blueprintGenerator, blueprintDef } from './blueprint';
 export { goldfoilGenerator, goldfoilDef } from './goldfoil';
+export { stampGenerator, stampDef } from './stamp';
 
 const ALL: InlineGenerator[] = [
   // sources
@@ -244,6 +246,8 @@ const ALL: InlineGenerator[] = [
   barcodeGenerator,
   petalsGenerator,
   urokoGenerator,
+  // 画像入力を持つ source（seed ガチャの対象外 — derive.ts が textures 持ちを除外する）
+  stampGenerator,
   // fields
   noiseGenerator,
   vortexGenerator,

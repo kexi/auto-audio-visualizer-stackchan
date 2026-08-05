@@ -113,6 +113,13 @@ function hasNonZeroAlpha(pixels: number[]): boolean {
   return false;
 }
 
+/** Number of pixels with any alpha at all. */
+function alphaCount(pixels: number[]): number {
+  let n = 0;
+  for (let i = 3; i < pixels.length; i += 4) if (pixels[i]! !== 0) n++;
+  return n;
+}
+
 function isUniform(pixels: number[]): boolean {
   if (pixels.length < 4) return true;
   const r0 = pixels[0]!,
@@ -131,6 +138,38 @@ type UniformSpec =
   | { name: string; kind: '2f'; value: [number, number] }
   | { name: string; kind: '1i'; value: number }
   | { name: string; kind: '1ui'; value: number };
+
+/**
+ * A texture slot to fill before drawing.
+ *
+ * `pattern` builds a procedural image in-browser (no fixture files, so the test
+ * stays hermetic and deterministic); `transparent` is the 1×1 stand-in the scene
+ * binds when a Patch references an image nobody has loaded; `firstRows` is
+ * opaque only in the rows uploaded first (t≈0) and pins the sampling
+ * orientation.
+ */
+interface TextureSpec {
+  name: string;
+  sizeName: string;
+  unit: number;
+  kind: 'pattern' | 'transparent' | 'firstRows';
+}
+
+/** Size of the procedural test image. Large enough to survive the 96px pass. */
+const DUMMY_IMAGE_SIZE = 128;
+
+/** Bindings for every declared slot, filled with the given kind of image. */
+function textureSpecs(
+  assembled: AssembledShader,
+  kind: TextureSpec['kind'] = 'pattern',
+): TextureSpec[] {
+  return assembled.textures.map((t, unit) => ({
+    name: t.name,
+    sizeName: t.sizeName,
+    unit,
+    kind,
+  }));
+}
 
 /**
  * Build serializable uniform values on the Node side (mirrors semanticSynth draw).
@@ -202,9 +241,11 @@ async function renderInBrowser(
   fragSrc: string,
   uniforms: UniformSpec[],
   size: number,
+  textures: TextureSpec[] = [],
+  imageSize: number = DUMMY_IMAGE_SIZE,
 ): Promise<{ ok: true; pixels: number[] } | { ok: false; log: string }> {
   return page.evaluate(
-    ({ vertSrc, fragSrc, uniforms, size }) => {
+    ({ vertSrc, fragSrc, uniforms, size, textures, imageSize }) => {
       const canvas = document.createElement('canvas');
       canvas.width = size;
       canvas.height = size;
@@ -305,6 +346,89 @@ async function renderInBrowser(
       gl.bindVertexArray(vao);
       gl.useProgram(prog);
 
+      // --- texture slots ---
+      /** Opaque disc over a checker, transparent outside — luminance AND alpha vary. */
+      function patternImage(n: number): ImageData {
+        const data = new Uint8ClampedArray(n * n * 4);
+        const cell = Math.max(1, n >> 3);
+        for (let y = 0; y < n; y++) {
+          for (let x = 0; x < n; x++) {
+            const i = (y * n + x) * 4;
+            const dx = (x + 0.5) / n - 0.5;
+            const dy = (y + 0.5) / n - 0.5;
+            const inside = dx * dx + dy * dy < 0.45 * 0.45;
+            const checker = (Math.floor(x / cell) + Math.floor(y / cell)) % 2 === 0;
+            const level = checker ? 255 : 140;
+            data[i] = inside ? level : 0;
+            data[i + 1] = inside ? level : 0;
+            data[i + 2] = inside ? level : 0;
+            data[i + 3] = inside ? 255 : 0;
+          }
+        }
+        return new ImageData(data, n, n);
+      }
+
+      /** Opaque white in the rows uploaded first (t≈0), transparent after. */
+      function firstRowsImage(n: number): ImageData {
+        const data = new Uint8ClampedArray(n * n * 4);
+        for (let y = 0; y < n; y++) {
+          const lit = y < n / 2;
+          for (let x = 0; x < n; x++) {
+            const i = (y * n + x) * 4;
+            data[i] = lit ? 255 : 0;
+            data[i + 1] = lit ? 255 : 0;
+            data[i + 2] = lit ? 255 : 0;
+            data[i + 3] = lit ? 255 : 0;
+          }
+        }
+        return new ImageData(data, n, n);
+      }
+
+      const createdTextures: WebGLTexture[] = [];
+      for (const t of textures) {
+        const tex = gl.createTexture();
+        if (!tex) continue;
+        createdTextures.push(tex);
+        gl.activeTexture(gl.TEXTURE0 + t.unit);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        // UNPACK_FLIP_Y_WEBGL stays untouched, exactly like semanticSynth's
+        // uploader — the image store is what owns the orientation.
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        if (t.kind === 'transparent') {
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            1,
+            1,
+            0,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            new Uint8Array([0, 0, 0, 0]),
+          );
+        } else {
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            t.kind === 'firstRows' ? firstRowsImage(imageSize) : patternImage(imageSize),
+          );
+        }
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const texLoc = gl.getUniformLocation(prog, t.name);
+        if (texLoc) gl.uniform1i(texLoc, t.unit);
+        const sizeLoc = gl.getUniformLocation(prog, t.sizeName);
+        const px = t.kind === 'transparent' ? 1 : imageSize;
+        if (sizeLoc) gl.uniform2f(sizeLoc, px, px);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+
       for (const u of uniforms) {
         const loc = gl.getUniformLocation(prog, u.name);
         if (!loc) continue;
@@ -334,11 +458,12 @@ async function renderInBrowser(
       gl.deleteVertexArray(vao);
       gl.deleteFramebuffer(fbo);
       gl.deleteTexture(tex);
+      for (const t of createdTextures) gl.deleteTexture(t);
       gl.deleteProgram(prog);
 
       return { ok: true as const, pixels: Array.from(buf) };
     },
-    { vertSrc, fragSrc, uniforms, size },
+    { vertSrc, fragSrc, uniforms, size, textures, imageSize },
   );
 }
 
@@ -346,6 +471,7 @@ async function renderPatch(
   page: Page,
   { patch }: NamedPatch,
   size: number = SIZE,
+  textureKind: TextureSpec['kind'] = 'pattern',
 ): Promise<{ ok: true; pixels: number[] } | { ok: false; log: string }> {
   let assembled: AssembledShader;
   try {
@@ -358,8 +484,16 @@ async function renderPatch(
   }
 
   const uniforms = buildUniformSpecs(patch, assembled, size);
+  const textures = textureSpecs(assembled, textureKind);
   try {
-    return await renderInBrowser(page, FULLSCREEN_VERT, assembled.fragSrc, uniforms, size);
+    return await renderInBrowser(
+      page,
+      FULLSCREEN_VERT,
+      assembled.fragSrc,
+      uniforms,
+      size,
+      textures,
+    );
   } catch (e) {
     return {
       ok: false,
@@ -506,6 +640,51 @@ describe('synth/gl assemblePatch GPU render', () => {
       }
 
       console.log(`[render.gpu.test] all ${ALL_RENDER.length} unique patches are non-uniform`);
+    },
+    renderTimeoutMs,
+  );
+
+  it(
+    'stamp draws the bound image, and nothing at all without one',
+    async () => {
+      const stamp = requireGen('stamp');
+      const neon = requireGen('neon');
+      const named: NamedPatch = {
+        label: 'source:stamp+material:neon',
+        patch: {
+          ...basePatch([opFromDef('src0', stamp.def), opFromDef('mat0', neon.def)]),
+          images: { 'src0.image': { name: 'procedural.png', hash: 'test-pattern' } },
+        },
+      };
+
+      // 1. a real (procedurally generated) image → visible, structured output
+      const withImage = await renderPatch(pg, named);
+      if (!withImage.ok) throw new Error(`stamp with image failed: ${withImage.log}`);
+      expect(hasNonZeroAlpha(withImage.pixels), 'stamp×neon drew nothing').toBe(true);
+      expect(isUniform(withImage.pixels), 'stamp×neon output is a flat fill').toBe(false);
+
+      // 2. the scene's fallback (1×1 transparent) → v = 0, an empty frame
+      const withoutImage = await renderPatch(pg, named, SIZE, 'transparent');
+      if (!withoutImage.ok) throw new Error(`stamp without image failed: ${withoutImage.log}`);
+      expect(
+        hasNonZeroAlpha(withoutImage.pixels),
+        'a missing image must render empty, not opaque',
+      ).toBe(false);
+
+      // 3. orientation. The image store hands over bottom-row-first pixels, so
+      //    the rows uploaded first (t≈0) must land at the bottom of the frame.
+      //    readPixels also starts at the bottom row, so the lit rows come first.
+      //    Quarters, not halves: LINEAR filtering bleeds a row or two across the
+      //    seam and that is not an orientation bug.
+      const oriented = await renderPatch(pg, named, SIZE, 'firstRows');
+      if (!oriented.ok) throw new Error(`stamp orientation probe failed: ${oriented.log}`);
+      const quarter = (SIZE * SIZE * 4) / 4;
+      const bottom = alphaCount(oriented.pixels.slice(0, quarter));
+      const top = alphaCount(oriented.pixels.slice(quarter * 3));
+      expect(bottom, 'first-uploaded rows must appear at the bottom of the frame').toBeGreaterThan(
+        quarter / 4 / 2,
+      );
+      expect(top, 'the transparent rows must appear at the top of the frame').toBe(0);
     },
     renderTimeoutMs,
   );
