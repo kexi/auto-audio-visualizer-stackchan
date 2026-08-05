@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AudioEngine } from './audio/AudioEngine';
 import { Renderer } from './render/Renderer';
 import { scenes, sceneByIndex, sceneIndexById } from './scenes';
+import { initBridgeClient } from './synth/bridgeClient';
 import { ControlPanel } from './ui/ControlPanel';
 import { TimelinePanel } from './ui/TimelinePanel';
 import { useSettings } from './ui/useSettings';
@@ -336,6 +337,15 @@ export function App(): React.ReactElement {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [setScene, shiftScene, update, reroll, onTap]);
+
+  // ---- 外部 CLI からの Bridge（?bridge=1 のときだけ有効） ----
+  useEffect(() => {
+    const handle = initBridgeClient();
+    // StrictMode では effect が2回走るので、必ず畳んで多重接続を防ぐ。
+    return () => {
+      handle?.close();
+    };
+  }, []);
 
   return (
     <>
