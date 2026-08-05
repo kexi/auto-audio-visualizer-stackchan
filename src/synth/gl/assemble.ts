@@ -22,10 +22,42 @@ export function nsUniformName(opId: string): string {
   return `uNs_${sanitizeId(opId)}`;
 }
 
+/** sampler2D uniform for a declared texture slot. */
+export function textureUniformName(opId: string, slot: string): string {
+  return `u_${sanitizeId(opId)}_tex_${sanitizeId(slot)}`;
+}
+
+/**
+ * Pixel size of the image bound to a slot, as a vec2.
+ *
+ * Emitted next to every sampler so a generator can correct for the image's own
+ * aspect ratio without the CPU having to bake it into a parameter.
+ */
+export function textureSizeUniformName(opId: string, slot: string): string {
+  return `${textureUniformName(opId, slot)}_size`;
+}
+
+/** One declared texture slot of one operator, with the uniforms bound to it. */
+export interface TextureBinding {
+  opId: string;
+  slot: string;
+  /** Patch.images のキー（`<opId>.<slot>`）。 */
+  key: string;
+  /** sampler2D uniform 名。 */
+  name: string;
+  /** vec2 の実サイズ uniform 名。 */
+  sizeName: string;
+}
+
 export interface AssembledShader {
   fragSrc: string;
   uniforms: Array<{ opId: string; paramId: string; name: string }>;
   nsUniforms: Array<{ opId: string; name: string }>;
+  /**
+   * 宣言順のテクスチャスロット。シーンはこの順にテクスチャユニットを割り当てる。
+   * テクスチャを使わない Patch では空配列。
+   */
+  textures: TextureBinding[];
 }
 
 /** Role used for fn naming and main() stage ordering. */
@@ -38,6 +70,8 @@ interface ResolvedOp {
   role: OpRole;
   fnName: string;
   nsName: string;
+  /** This operator's slots, in declaration order. Empty for most generators. */
+  textures: TextureBinding[];
 }
 
 function roleOf(def: GeneratorDefinition): OpRole {
@@ -82,6 +116,7 @@ export function assemblePatch(
 ): AssembledShader {
   const uniforms: AssembledShader['uniforms'] = [];
   const nsUniforms: AssembledShader['nsUniforms'] = [];
+  const textures: TextureBinding[] = [];
 
   // Resolve operators in stable order (patch.operators appearance order).
   const resolved: ResolvedOp[] = [];
@@ -107,7 +142,15 @@ export function assemblePatch(
     const idx = roleCounts[role]++;
     const fnName = `${role}_${idx}`;
     const nsName = nsUniformName(op.id);
-    resolved.push({ op, gen, def: gen.def, role, fnName, nsName });
+    const opTextures: TextureBinding[] = (gen.def.textures ?? []).map((slot) => ({
+      opId: op.id,
+      slot,
+      key: `${op.id}.${slot}`,
+      name: textureUniformName(op.id, slot),
+      sizeName: textureSizeUniformName(op.id, slot),
+    }));
+    textures.push(...opTextures);
+    resolved.push({ op, gen, def: gen.def, role, fnName, nsName, textures: opTextures });
     nsUniforms.push({ opId: op.id, name: nsName });
     for (const param of gen.def.parameters) {
       uniforms.push({
@@ -124,6 +167,11 @@ export function assemblePatch(
   lines.push('#version 300 es');
   lines.push('precision highp float;');
   lines.push('precision highp int;');
+  if (textures.length > 0) {
+    // GLSL ES 3.00 defaults samplers to lowp in the fragment stage. Only emitted
+    // when a slot exists so texture-free patches keep byte-identical sources.
+    lines.push('precision highp sampler2D;');
+  }
   lines.push('');
   lines.push(RNG_GLSL.trim());
   lines.push('');
@@ -143,6 +191,10 @@ export function assemblePatch(
       const name = uniformName(r.op.id, param.id);
       lines.push(`uniform ${glslUniformType(param)} ${name};`);
     }
+    for (const tex of r.textures) {
+      lines.push(`uniform sampler2D ${tex.name};`);
+      lines.push(`uniform vec2 ${tex.sizeName};`);
+    }
     lines.push(`uniform uint ${r.nsName};`);
   }
   lines.push('');
@@ -150,11 +202,29 @@ export function assemblePatch(
   // ---- emitted generator functions (operators array order) ----
   lines.push('// --- generator functions ---');
   for (const r of resolved) {
+    const declaredSlots = new Set(r.textures.map((t) => t.slot));
+    /** Fail loud: a generator asking for a slot it never declared is a bug. */
+    const requireSlot = (slot: string): void => {
+      if (!declaredSlots.has(slot)) {
+        throw new Error(
+          `assemblePatch: generator "${r.def.id}" requested texture slot "${slot}" ` +
+            `which it does not declare (textures: [${(r.def.textures ?? []).join(', ')}])`,
+        );
+      }
+    };
     const body = r.gen.emit({
       fnName: r.fnName,
       uniform: (paramId: string) => uniformName(r.op.id, paramId),
       nsUniform: r.nsName,
       seedUniform: SEED_UNIFORM,
+      texUniform: (slot: string) => {
+        requireSlot(slot);
+        return textureUniformName(r.op.id, slot);
+      },
+      texSizeUniform: (slot: string) => {
+        requireSlot(slot);
+        return textureSizeUniformName(r.op.id, slot);
+      },
     });
     lines.push(body);
     lines.push('');
@@ -220,5 +290,6 @@ export function assemblePatch(
     fragSrc: lines.join('\n'),
     uniforms,
     nsUniforms,
+    textures,
   };
 }

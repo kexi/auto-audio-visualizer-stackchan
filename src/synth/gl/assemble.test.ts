@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { assemblePatch, nsUniformName, SEED_UNIFORM, uniformName } from './assemble';
-import { inlineCatalog } from '../generators';
-import type { VisualPatch } from '../types';
+import {
+  assemblePatch,
+  nsUniformName,
+  SEED_UNIFORM,
+  textureSizeUniformName,
+  textureUniformName,
+  uniformName,
+} from './assemble';
+import { createInlineCatalog, inlineCatalog, stampGenerator } from '../generators';
+import type { GeneratorDefinition, VisualPatch } from '../types';
+import type { EmitContext, InlineGenerator } from '../generators/types';
 
 function defaultPatch(seed = 'test-seed'): VisualPatch {
   return {
@@ -142,5 +150,103 @@ describe('synth/gl/assemblePatch', () => {
     const { fragSrc } = assemblePatch(defaultPatch(), inlineCatalog);
     expect(fragSrc).toContain('uniform float uFade;');
     expect(fragSrc).toContain('fragColor *= uFade');
+  });
+});
+
+/** Patch with a stamp (textures: ['image']) as its source. */
+function stampPatch(opId = 'src0'): VisualPatch {
+  const patch = defaultPatch();
+  return {
+    ...patch,
+    operators: [
+      {
+        id: opId,
+        generatorId: 'stamp',
+        generatorVersion: 1,
+        parameters: { fit: 'contain', scale: 1, invert: false },
+      },
+      patch.operators[3]!,
+    ],
+    images: { [`${opId}.image`]: { name: 'logo.png', hash: 'abc123' } },
+  };
+}
+
+describe('synth/gl/assemblePatch texture slots', () => {
+  it('texture-free patches declare no samplers and keep the header unchanged', () => {
+    const { fragSrc, textures } = assemblePatch(defaultPatch(), inlineCatalog);
+    expect(textures).toEqual([]);
+    expect(fragSrc).not.toContain('sampler2D');
+    expect(fragSrc).not.toContain('precision highp sampler2D;');
+  });
+
+  it('declares sampler2D + size uniform for every declared slot', () => {
+    const { fragSrc, textures } = assemblePatch(stampPatch(), inlineCatalog);
+
+    expect(textureUniformName('src0', 'image')).toBe('u_src0_tex_image');
+    expect(textureSizeUniformName('src0', 'image')).toBe('u_src0_tex_image_size');
+
+    expect(fragSrc).toContain('precision highp sampler2D;');
+    expect(fragSrc).toContain('uniform sampler2D u_src0_tex_image;');
+    expect(fragSrc).toContain('uniform vec2 u_src0_tex_image_size;');
+    expect(fragSrc).toContain('texture(u_src0_tex_image');
+    expect(textures).toEqual([
+      {
+        opId: 'src0',
+        slot: 'image',
+        key: 'src0.image',
+        name: 'u_src0_tex_image',
+        sizeName: 'u_src0_tex_image_size',
+      },
+    ]);
+  });
+
+  it('binding info is per operator, so two stamps get separate samplers', () => {
+    const base = stampPatch();
+    const patch: VisualPatch = {
+      ...base,
+      operators: [base.operators[0]!, { ...base.operators[0]!, id: 'src1' }, base.operators[1]!],
+    };
+    const { textures, fragSrc } = assemblePatch(patch, inlineCatalog);
+    expect(textures.map((t) => t.key)).toEqual(['src0.image', 'src1.image']);
+    expect(fragSrc).toContain('uniform sampler2D u_src0_tex_image;');
+    expect(fragSrc).toContain('uniform sampler2D u_src1_tex_image;');
+  });
+
+  it('sanitizes opIds in texture uniform names', () => {
+    const { textures, fragSrc } = assemblePatch(stampPatch('src-0!'), inlineCatalog);
+    expect(textures[0]!.name).toBe('u_src_0__tex_image');
+    // The Patch key keeps the raw opId; only the GLSL identifier is sanitized.
+    expect(textures[0]!.key).toBe('src-0!.image');
+    expect(fragSrc).toContain('uniform sampler2D u_src_0__tex_image;');
+  });
+
+  it('assembly stays deterministic with textures present', () => {
+    const patch = stampPatch();
+    const a = assemblePatch(patch, inlineCatalog);
+    const b = assemblePatch(patch, inlineCatalog);
+    expect(a.fragSrc).toBe(b.fragSrc);
+    expect(a.textures).toEqual(b.textures);
+  });
+
+  it('throws when a generator asks for a slot it never declared', () => {
+    const badDef: GeneratorDefinition = {
+      ...stampGenerator.def,
+      id: 'bad-stamp',
+      textures: ['image'],
+    };
+    const bad: InlineGenerator = {
+      def: badDef,
+      emit: (ctx: EmitContext) =>
+        `float ${ctx.fnName}(vec2 p) { return ${ctx.texUniform('nope')}; }`,
+    };
+    const catalog = createInlineCatalog([bad, ...inlineCatalog.all()]);
+    const patch: VisualPatch = {
+      ...stampPatch(),
+      operators: [
+        { id: 'src0', generatorId: 'bad-stamp', generatorVersion: 1, parameters: {} },
+        defaultPatch().operators[3]!,
+      ],
+    };
+    expect(() => assemblePatch(patch, catalog)).toThrow(/does not declare/);
   });
 });

@@ -14,9 +14,28 @@
  */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 import { WebSocket } from 'ws';
 
 const DEFAULT_PORT = 7877;
+
+/**
+ * image コマンドが送れるファイルサイズの上限。
+ * base64 で 4/3 に膨らんだうえ WebSocket フレーム1本に載るので、
+ * ブラウザとリレーの両方が黙って詰まらない範囲に切っておく。
+ */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** 拡張子 → MIME。ブラウザ側の decode 分岐（特に SVG）に効く。 */
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
+};
 
 // room コマンドの既定 host。<account> はプレースホルダで、実際の host は
 // Cloudflare ダッシュボードの workers.dev サブドメイン、または独自ドメインを確認して
@@ -59,6 +78,10 @@ const USAGE = `使い方: node scripts/vj-ctl.mjs <command> [options]
   catalog                      Generator カタログ（id / category / tags / parameters）を表示
   seed <seed>                  seed から派生した Patch へ即遷移
   patch <file.json>            VisualPatch を即適用（検証に落ちると issues が返る）
+  image <file> [--name <n>]    画像 (png/jpg/webp/svg) を読み込ませる（上限 ${
+    MAX_IMAGE_BYTES / 1024 / 1024
+  }MB）
+                               返る hash を Patch の images["<opId>.image"] に入れて使う
   event add --in <sec>|--bar <n> [--seed <s>] [--patch <file>] [--label <s>]
                                [--transition default|slow|cut]
                                「N 秒後 / N 小節後に切り替える」イベントを Timeline に追加
@@ -81,6 +104,7 @@ room 専用オプション:
 例:
   node scripts/vj-ctl.mjs state
   node scripts/vj-ctl.mjs seed "humid-night-market"
+  node scripts/vj-ctl.mjs image ./logo.png --name event-logo
   node scripts/vj-ctl.mjs event add --in 30 --seed rainy-qilou --transition slow
   node scripts/vj-ctl.mjs event add --bar 8 --patch /tmp/patch.json
   node scripts/vj-ctl.mjs lock 60
@@ -151,6 +175,32 @@ function readJsonFile(path, what) {
   } catch (e) {
     return usageError(`${what} が JSON として不正です: ${path} (${e.message})`);
   }
+}
+
+/** 画像を読んで base64 にする。上限超過はここで止め、無駄に送らない。 */
+function readImageFile(path) {
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (e) {
+    return usageError(`画像を読めません: ${path} (${e.message})`);
+  }
+  if (bytes.length === 0) usageError(`画像が空です: ${path}`);
+  if (bytes.length > MAX_IMAGE_BYTES) {
+    usageError(
+      `画像が大きすぎます: ${path} (${(bytes.length / 1024 / 1024).toFixed(1)}MB > ` +
+        `${MAX_IMAGE_BYTES / 1024 / 1024}MB)。書き出し解像度を落としてください。`,
+    );
+  }
+  const ext = extname(path).toLowerCase();
+  return {
+    bytesBase64: bytes.toString('base64'),
+    // 未知の拡張子でも送る: ブラウザ側は Blob の type が空でも
+    // createImageBitmap で中身から判定できる（SVG だけは拡張子が頼り）。
+    mime: IMAGE_MIME[ext] ?? '',
+    fileName: basename(path),
+    byteLength: bytes.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +361,18 @@ async function run(conn, positional, flags) {
         result,
         undefined,
         'Patch が検証ゲートに落ちました。issues を見て直してください。',
+      );
+    }
+
+    case 'image': {
+      if (rest.length === 0) usageError('image には <file> が必要です');
+      const { bytesBase64, mime, fileName, byteLength } = readImageFile(rest[0]);
+      const name = flags.has('name') ? flags.get('name') : fileName;
+      const result = await conn.request('setImage', { name, bytesBase64, mime });
+      return resultOut(
+        result,
+        { name, byteLength },
+        '画像を登録できませんでした。issues を確認してください。',
       );
     }
 

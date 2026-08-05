@@ -37,12 +37,30 @@ export interface SynthControlState {
   firedIds: readonly string[];
 }
 
+/** setImage の結果。ok のとき hash は Patch の images 参照にそのまま使える。 */
+export interface SetImageResult {
+  ok: boolean;
+  issues: string[];
+  /** SHA-256 hex（成功時のみ）。 */
+  hash?: string;
+  /** 実際に登録された名前（成功時のみ）。 */
+  name?: string;
+}
+
 export interface SynthControl {
   getState(): SynthControlState;
   /** gatePatchProposal を通してから適用する。issues が空なら遷移が始まる。 */
   proposePatch(input: unknown): { ok: boolean; issues: string[] };
   /** seed から派生した Patch へ遷移する（ガチャの Timeline 版）。 */
   proposeSeed(seed: string): void;
+  /**
+   * 画像を登録する（Bridge 経由の `vj-ctl image` の受け口）。
+   *
+   * 登録するだけで、どの Operator に割り当てるかは決めない。返った hash を
+   * Patch の `images["<opId>.<slot>"]` に入れて proposePatch する、という順で使う。
+   * ハッシュ計算と decode が非同期なので、control のなかでここだけ Promise を返す。
+   */
+  setImage(name: string, bytesBase64: string, mime: string): Promise<SetImageResult>;
   applyTimelineOp(op: TimelineOp): { ok: boolean; issue?: string };
   fireExternal(id: string): void;
   startRecording(): void;
@@ -118,6 +136,12 @@ const facade: SynthControl = {
 
   proposeSeed(seed: string): void {
     active?.proposeSeed(seed);
+  },
+
+  setImage(name: string, bytesBase64: string, mime: string): Promise<SetImageResult> {
+    return active
+      ? active.setImage(name, bytesBase64, mime)
+      : Promise.resolve({ ok: false, issues: [NO_SCENE] });
   },
 
   applyTimelineOp(op: TimelineOp): { ok: boolean; issue?: string } {

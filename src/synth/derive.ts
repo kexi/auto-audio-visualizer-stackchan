@@ -55,6 +55,11 @@ const ROUTE_SOURCES = [
 
 const MAX_STRIP_ATTEMPTS = 32;
 
+/** 画像入力を要求する Generator か。derive の候補からは外す。 */
+function needsTexture(gen: InlineGenerator): boolean {
+  return (gen.def.textures?.length ?? 0) > 0;
+}
+
 /** Inclusive integer in [min, max]. Avoids off-by-one when rand is in [0, 1). */
 function randInt(seed: string, ns: string, index: number, min: number, max: number): number {
   if (max <= min) return min;
@@ -324,13 +329,21 @@ function withRoutes(patch: VisualPatch, defCatalog: ReturnType<typeof createCata
 export function derivePatch(seed: string, opts: DeriveOptions): VisualPatch {
   const qualityTier: QualityTier = opts.qualityTier ?? 'medium';
   const gens = opts.catalog.all();
+  // defCatalog は validate / cost 用なので、除外前の全 Generator を載せる。
+  // 手で組んだ Patch（stamp 入り）も derive と同じカタログで検証されるべきなので。
   const defCatalog = createCatalog(gens.map((g) => g.def));
 
+  // Generators with a texture input never appear in a derived patch: a picture
+  // is something the operator deliberately brings, so the seed gacha must not
+  // make the event logo pop in and out on its own. They stay fully available to
+  // hand-built patches (proposePatch) — only the rendezvous pools exclude them.
+  const selectable = gens.filter((g) => !needsTexture(g));
+
   const pool: Record<GeneratorCategory, InlineGenerator[]> = {
-    source: gens.filter((g) => g.def.category === 'source'),
-    field: gens.filter((g) => g.def.category === 'field'),
-    modifier: gens.filter((g) => g.def.category === 'modifier'),
-    material: gens.filter((g) => g.def.category === 'material'),
+    source: selectable.filter((g) => g.def.category === 'source'),
+    field: selectable.filter((g) => g.def.category === 'field'),
+    modifier: selectable.filter((g) => g.def.category === 'modifier'),
+    material: selectable.filter((g) => g.def.category === 'material'),
   };
 
   // Counts within validate.ts limits, capped by available candidates.

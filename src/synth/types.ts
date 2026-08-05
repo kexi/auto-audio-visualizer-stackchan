@@ -48,6 +48,17 @@ export interface GeneratorDefinition {
   tags: GeneratorTags;
   parameters: ParameterDefinition[];
   cost: GeneratorCost;
+  /**
+   * 入力テクスチャのスロット名。宣言した Generator は、スロットごとに
+   * `sampler2D` とその実サイズ `vec2` の uniform を受け取る（assemble.ts が
+   * 宣言を出し、シーンが Patch の images 参照を解決してバインドする）。
+   *
+   * Phase 0 で予約した PortType 'texture' の、入力側としての実体。impl が
+   * inline / pass のどちらでも同じ宣言でよい（pass Generator のフィードバック
+   * 入力も同じスロット機構に乗る）。省略した Generator はテクスチャを一切
+   * 受け取らない = 既存の Generator はすべて不変。
+   */
+  textures?: string[];
 }
 
 export interface VisualOperator {
@@ -92,6 +103,16 @@ export interface CompositionSpec {
 
 export type QualityTier = 'low' | 'medium' | 'high';
 
+/**
+ * Patch が参照する画像。ピクセルは持たず、名前とコンテンツハッシュだけを保存する
+ * （Semantic Replay の契約: 同じ画像が手元にあれば同じ Look、無ければ v=0）。
+ */
+export interface ImageRef {
+  name: string;
+  /** SHA-256 hex（元バイト列のハッシュ）。 */
+  hash: string;
+}
+
 export interface VisualPatch {
   schemaVersion: number;
   seed: string;
@@ -100,6 +121,11 @@ export interface VisualPatch {
   palette: PaletteSpec;
   composition: CompositionSpec;
   qualityTier: QualityTier;
+  /**
+   * テクスチャスロットへの画像割り当て。キーは `<opId>.<slot>`。
+   * 任意フィールドなので、テクスチャを使わない Patch は今までどおり省略する。
+   */
+  images?: Record<string, ImageRef>;
 }
 
 export interface RenderBudget {

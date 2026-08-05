@@ -61,6 +61,9 @@ const modifierGen2 = def({ id: 'gen-modifier-2', category: 'modifier' });
 const modifierGen3 = def({ id: 'gen-modifier-3', category: 'modifier' });
 const materialGen = def({ id: 'gen-material', category: 'material', output: 'color' });
 
+/** Source with a texture input slot — the shape stamp has. */
+const texturedGen = def({ id: 'gen-textured', category: 'source', textures: ['image'] });
+
 const catalog = createCatalog([
   sourceGen,
   sourceGen2,
@@ -70,6 +73,7 @@ const catalog = createCatalog([
   modifierGen2,
   modifierGen3,
   materialGen,
+  texturedGen,
   def({ id: 'gen-v2', category: 'source', version: 2 }),
 ]);
 
@@ -694,6 +698,56 @@ describe('synth/validate', () => {
         ],
       });
       expect(codes(patch)).toContain('invalid_smoothing');
+    });
+  });
+
+  describe('rule11: image references', () => {
+    /** validPatch with its source swapped for the textured generator. */
+    function texturedPatch(images?: VisualPatch['images']): VisualPatch {
+      const base = validPatch();
+      return {
+        ...base,
+        operators: [
+          { ...base.operators[0]!, generatorId: 'gen-textured' },
+          ...base.operators.slice(1),
+        ],
+        ...(images ? { images } : {}),
+      };
+    }
+
+    it('pass: patch without images (every existing patch)', () => {
+      expect(validatePatch(validPatch(), catalog)).toEqual([]);
+    });
+
+    it('pass: reference points at a declared slot', () => {
+      const patch = texturedPatch({ 'src.image': { name: 'logo.png', hash: 'deadbeef' } });
+      expect(validatePatch(patch, catalog)).toEqual([]);
+    });
+
+    it('pass: a declared slot may stay unassigned (renders empty, not invalid)', () => {
+      expect(validatePatch(texturedPatch({}), catalog)).toEqual([]);
+    });
+
+    it('fail: key is not "<opId>.<slot>"', () => {
+      const patch = texturedPatch({ src: { name: 'logo.png', hash: 'deadbeef' } });
+      expect(codes(patch)).toContain('invalid_image_key');
+    });
+
+    it('fail: operator does not exist', () => {
+      const patch = texturedPatch({ 'nope.image': { name: 'logo.png', hash: 'deadbeef' } });
+      expect(codes(patch)).toContain('invalid_image_key');
+    });
+
+    it('fail: operator exists but declares no such slot', () => {
+      const patch = texturedPatch({ 'src.background': { name: 'logo.png', hash: 'deadbeef' } });
+      expect(codes(patch)).toContain('unknown_texture_slot');
+    });
+
+    it('fail: operator declares no textures at all', () => {
+      const patch = validPatch({ images: { 'src.image': { name: 'l.png', hash: 'deadbeef' } } });
+      const issues = validatePatch(patch, catalog);
+      expect(issues.map((i) => i.code)).toContain('unknown_texture_slot');
+      expect(issues.find((i) => i.code === 'unknown_texture_slot')?.path).toBe('images.src.image');
     });
   });
 

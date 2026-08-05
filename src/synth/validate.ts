@@ -154,6 +154,55 @@ function parseTarget(target: string): { opId: string; paramId: string } | null {
   };
 }
 
+/**
+ * images のキーは `<opId>.<slot>` で、実在する Operator の実在するテクスチャ
+ * スロットを指していなければならない。
+ *
+ * 参照が指す画像が手元に無いこと自体は issue にしない（そのときは v=0 で描く、
+ * というのが Semantic Replay の契約）。ここで弾くのは「どのスロットにも
+ * 結び付かない参照」＝ 明確な構成ミスだけ。
+ */
+function validateImages(patch: VisualPatch, catalog: GeneratorCatalog): ValidationIssue[] {
+  const images = patch.images;
+  if (!images) return [];
+
+  const issues: ValidationIssue[] = [];
+  const opById = new Map(patch.operators.map((op) => [op.id, op]));
+
+  for (const key of Object.keys(images)) {
+    const path = `images.${key}`;
+    const parsed = parseTarget(key);
+    if (!parsed) {
+      issues.push(issue('invalid_image_key', `image key "${key}" must be "<opId>.<slot>"`, path));
+      continue;
+    }
+    const op = opById.get(parsed.opId);
+    if (!op) {
+      issues.push(
+        issue('invalid_image_key', `image operator "${parsed.opId}" does not exist`, path),
+      );
+      continue;
+    }
+    const def = catalog.get(op.generatorId);
+    if (!def) continue; // unknown_generator は上流で報告済み
+    // parseTarget の第2セグメント = ここではスロット名。
+    const slot = parsed.paramId;
+    const slots = def.textures ?? [];
+    if (!slots.includes(slot)) {
+      issues.push(
+        issue(
+          'unknown_texture_slot',
+          `generator "${op.generatorId}" has no texture slot "${slot}"` +
+            (slots.length > 0 ? ` (declared: ${slots.join(', ')})` : ' (declares none)'),
+          path,
+        ),
+      );
+    }
+  }
+
+  return issues;
+}
+
 export function validatePatch(patch: VisualPatch, catalog: GeneratorCatalog): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const operators = patch.operators;
@@ -364,6 +413,9 @@ export function validatePatch(patch: VisualPatch, catalog: GeneratorCatalog): Va
       );
     }
   }
+
+  // 11. images: every reference must land on a declared texture slot
+  issues.push(...validateImages(patch, catalog));
 
   return issues;
 }

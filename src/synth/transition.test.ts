@@ -447,4 +447,44 @@ describe('synth/transition', () => {
       expect(s.patch.qualityTier).toBe('high');
     });
   });
+
+  describe('image references', () => {
+    const oldRef = { 'src.image': { name: 'old.png', hash: 'aaa' } };
+    const newRef = { 'src.image': { name: 'new.png', hash: 'bbb' } };
+
+    it('takes the target assignment immediately (no blank frame mid-morph)', () => {
+      const tr = createTransition(
+        basePatch({ images: oldRef }),
+        basePatch({ images: newRef }),
+        linearSpec(),
+        0,
+      );
+      // start, middle and end of the parameter morph
+      for (const t of [0, 400, 800]) {
+        expect(tr.sample(t).patch.images).toEqual(newRef);
+      }
+    });
+
+    it('carries images through a morph that only changes parameters', () => {
+      const from = basePatch({ images: oldRef });
+      const to = basePatch({
+        images: oldRef,
+        palette: { mode: 'mono', hueOffset: 180, saturation: 50, lightness: 50 },
+      });
+      const tr = createTransition(from, to, linearSpec(), 0);
+      expect(tr.sample(100).patch.images).toEqual(oldRef);
+    });
+
+    it('leaves the key absent when neither side has images', () => {
+      const tr = createTransition(basePatch(), basePatch({ seed: 'B' }), linearSpec(), 0);
+      expect('images' in tr.sample(0).patch).toBe(false);
+    });
+
+    it('an images-only change stays a same-topology morph (no deck crossfade)', () => {
+      const from = basePatch({ images: oldRef });
+      const to = basePatch({ images: newRef });
+      expect(sameTopology(from, to)).toBe(true);
+      expect(createTransition(from, to, linearSpec(), 0).needsDecks).toBe(false);
+    });
+  });
 });

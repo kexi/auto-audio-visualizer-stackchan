@@ -372,10 +372,13 @@ const EXPECTED_PATCH_COUNT = expectedPatchCount();
 describe('synth/gl assemblePatch GPU compile', () => {
   // Plan checks need no GPU: they guard the sampling itself, so a browserless
   // machine still fails loudly if a generator drops out of the patch set.
-  it(`patch set covers all 100 generators (${PATCH_COUNT} patches, full=${fullSweep})`, () => {
+  it(`patch set covers all 101 generators (${PATCH_COUNT} patches, full=${fullSweep})`, () => {
     const catalog = inlineCatalog.all();
-    // catalog size sanity: 100 generators
-    expect(catalog.length).toBe(100);
+    // catalog size sanity: 100 procedural generators + stamp (image source)
+    expect(catalog.length).toBe(101);
+    // stamp must be in the plan as a solo source: an image generator that never
+    // compiles on its own would only be caught live, mid-set.
+    expect(ALL_PATCHES.some((p) => p.label === 'solo/source:stamp')).toBe(true);
     expect(PATCH_COUNT).toBe(EXPECTED_PATCH_COUNT);
     expect(PATCH_COUNT).toBeGreaterThan(0);
 

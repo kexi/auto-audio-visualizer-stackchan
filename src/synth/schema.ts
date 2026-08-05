@@ -37,6 +37,12 @@ const compositionSpecSchema = v.object({
   speed: v.pipe(v.number(), v.finite()),
 });
 
+/** 画像そのものではなく参照だけ。ピクセルは Patch に入らない。 */
+const imageRefSchema = v.object({
+  name: v.pipe(v.string(), v.minLength(1)),
+  hash: v.pipe(v.string(), v.minLength(1)),
+});
+
 export const visualPatchSchema = v.object({
   schemaVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
   seed: v.string(),
@@ -45,6 +51,9 @@ export const visualPatchSchema = v.object({
   palette: paletteSpecSchema,
   composition: compositionSpecSchema,
   qualityTier: qualityTierSchema,
+  // 任意フィールド。既存の Patch（images 無し）はそのまま通るので
+  // schemaVersion は 1 のまま据え置く（後方互換な追加）。
+  images: v.optional(v.record(v.string(), imageRefSchema)),
 });
 
 /** Recursively sort object keys for deterministic JSON serialization. */
