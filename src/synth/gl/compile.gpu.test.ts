@@ -278,15 +278,15 @@ describe('synth/gl assemblePatch GPU compile', () => {
     await br.close().catch(() => {});
   });
 
-  // 49 generators → hundreds of combination patches; default 5s testTimeout is too short.
+  // 66 generators → hundreds of combination patches; default 5s testTimeout is too short.
   const compileTimeoutMs = 120_000;
 
   it(
     `compiles ${PATCH_COUNT} patches covering all generators`,
     async () => {
       expect(PATCH_COUNT).toBeGreaterThan(0);
-      // catalog size sanity: 49 generators
-      expect(inlineCatalog.all().length).toBe(49);
+      // catalog size sanity: 66 generators
+      expect(inlineCatalog.all().length).toBe(66);
       console.log(`[compile.gpu.test] verifying ${PATCH_COUNT} patches`);
 
       const failures: string[] = [];
