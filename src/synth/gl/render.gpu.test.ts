@@ -403,8 +403,8 @@ describe('synth/gl assemblePatch GPU render', () => {
     await br.close().catch(() => {});
   });
 
-  // SIZE=256 makes multi-patch WebGL/readPixels slower than the default 5s testTimeout.
-  const renderTimeoutMs = 30_000;
+  // SIZE=256 + 9 sources × 8 materials makes multi-patch WebGL/readPixels slow.
+  const renderTimeoutMs = 60_000;
 
   it(
     `all Sources draw something (${SOURCE_NEON.length} patches)`,
