@@ -12,10 +12,16 @@
  *   - 通信/引数エラー → {"error":"..."} を stdout、ヒントを stderr、exit 1
  *   - record stop     → recording JSON を再整形せずそのまま stdout（> recording.json 用）
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { WebSocket } from 'ws';
 
 const DEFAULT_PORT = 7877;
+
+// room コマンドの既定 host。<account> はプレースホルダで、実際の host は
+// Cloudflare ダッシュボードの workers.dev サブドメイン、または独自ドメインを確認して
+// 差し替えること（--host で毎回上書きもできる）。
+const DEFAULT_ROOM_HOST = 'auto-audio-visualizer.<account>.workers.dev';
 
 /** 接続からコマンド完了までの全体上限。bridge も synth も無言のまま固まる場合の保険。 */
 const OVERALL_TIMEOUT_MS = 20_000;
@@ -62,10 +68,15 @@ const USAGE = `使い方: node scripts/vj-ctl.mjs <command> [options]
   record start                 録画開始
   record stop                  録画を止めて recording JSON を stdout へ（> recording.json）
   load <recording.json>        recording を読み込んで Timeline を復元
+  room                         新しい room id と接続 URL を生成する（Cloudflare Worker 経由で使う）
 
 共通オプション:
   --port <n>                   bridge のポート（既定 ${DEFAULT_PORT}）
+  --url <ws(s)://…/room/<id>>  Cloudflare Worker のリレーに接続する（--port と排他）
   --help                       このヘルプ
+
+room 専用オプション:
+  --host <host>                 room の URL に使うホスト名（既定 ${DEFAULT_ROOM_HOST}）
 
 例:
   node scripts/vj-ctl.mjs state
@@ -73,7 +84,9 @@ const USAGE = `使い方: node scripts/vj-ctl.mjs <command> [options]
   node scripts/vj-ctl.mjs event add --in 30 --seed rainy-qilou --transition slow
   node scripts/vj-ctl.mjs event add --bar 8 --patch /tmp/patch.json
   node scripts/vj-ctl.mjs lock 60
-  node scripts/vj-ctl.mjs record stop > recording.json`;
+  node scripts/vj-ctl.mjs record stop > recording.json
+  node scripts/vj-ctl.mjs room --host auto-audio-visualizer.example.workers.dev
+  node scripts/vj-ctl.mjs --url wss://auto-audio-visualizer.example.workers.dev/room/xxxx state`;
 
 /** 引数の誤り。main が usage を出して exit 1 にする。 */
 class UsageError extends Error {}
@@ -144,8 +157,22 @@ function readJsonFile(path, what) {
 // 接続
 // ---------------------------------------------------------------------------
 
-function openConnection(port) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+/** 接続先 URL を決める。--url があればそれ、無ければローカル bridge。 */
+function resolveTarget(flags) {
+  if (flags.has('url')) {
+    if (flags.has('port')) usageError('--url と --port は同時に指定できません');
+    const url = flags.get('url');
+    if (!/^wss?:\/\//.test(url)) {
+      usageError(`--url は ws:// か wss:// で始まる必要があります（${url}）`);
+    }
+    return url;
+  }
+  const port = flags.has('port') ? numberFlag(flags, 'port') : DEFAULT_PORT;
+  return `ws://127.0.0.1:${port}`;
+}
+
+function openConnection(url) {
+  const ws = new WebSocket(url);
   const pending = new Map();
   let nextId = 1;
 
@@ -374,12 +401,19 @@ function fail(message, hint) {
   process.exitCode = 1;
 }
 
-function hintFor(message, port) {
+function hintFor(message, target) {
+  // /room/ を含む URL はリレー（Cloudflare Worker）宛。ローカル bridge とは
+  // 起動手段もヒントも別なので、接続先で文言を出し分ける。
+  const isRelay = target.includes('/room/');
   if (message.includes('no synth connected')) {
-    return 'アプリを `?scene=semantic-synth&bridge=1` 付きで開いているか確認してください。';
+    return isRelay
+      ? 'ブラウザで `?scene=semantic-synth&room=<id>` 付きの URL を開いているか、room id が一致しているか確認してください。'
+      : 'アプリを `?scene=semantic-synth&bridge=1` 付きで開いているか確認してください。';
   }
   if (message.includes('ECONNREFUSED') || message.includes('接続が切れました')) {
-    return `ws://127.0.0.1:${port} につながりません。\`pnpm bridge\` が起動しているか確認してください。`;
+    return isRelay
+      ? `${target} につながりません。Worker が動いているか、URL が正しいか確認してください（\`node scripts/vj-ctl.mjs room\` で URL を作れます）。`
+      : `${target} につながりません。\`pnpm bridge\` が起動しているか確認してください。`;
   }
   if (message.includes('timeout waiting for synth')) {
     return 'ブラウザが応答していません。タブが背面に回っていないか確認してください。';
@@ -388,7 +422,7 @@ function hintFor(message, port) {
 }
 
 async function main() {
-  let port = DEFAULT_PORT;
+  let target = `ws://127.0.0.1:${DEFAULT_PORT}`;
   let conn = null;
   let overall = null;
   let timedOut = false;
@@ -398,17 +432,34 @@ async function main() {
     if (flags.get('help') === true || positional.length === 0) {
       usageError('コマンドを指定してください');
     }
-    if (flags.has('port')) port = numberFlag(flags, 'port');
 
-    conn = openConnection(port);
+    if (positional[0] === 'room') {
+      // room は WebSocket を一切開かないローカル専用コマンド。ここで完結させて
+      // 以降の接続処理（タイムアウトタイマーも含む）には進ませない。
+      const host = flags.has('host') ? flags.get('host') : DEFAULT_ROOM_HOST;
+      // room id は「URL を知っていれば誰でも操縦できる合鍵」。認証は無く、
+      // 128bit のランダム性だけが防御。使い捨てにして、人目に付く場所には貼らないこと。
+      const room = randomBytes(16).toString('base64url');
+      const res = jsonOut({
+        room,
+        pageUrl: `https://${host}/?scene=semantic-synth&room=${room}`,
+        ctlArgs: `--url wss://${host}/room/${room}`,
+      });
+      process.stdout.write(res.output);
+      return;
+    }
+
+    target = resolveTarget(flags);
+
+    conn = openConnection(target);
     // 通信が固まったまま端末を占有しないための最終防衛線。
     overall = setTimeout(() => {
       timedOut = true;
       // 接続が拒否されずに沈黙する環境（WSL 等）ではここが唯一の手掛かりになるので、
-      // bridge 未起動とブラウザ無応答の両方を疑えるヒントを出す。
+      // bridge / Worker 未起動とブラウザ無応答の両方を疑えるヒントを出す。
       fail(
         `timeout after ${OVERALL_TIMEOUT_MS / 1000}s`,
-        `\`pnpm bridge\` が起動しているか（ws://127.0.0.1:${port}）、ブラウザが応答しているか確認してください。`,
+        `${target} に接続できているか、ブラウザが応答しているか確認してください。`,
       );
       conn.abort();
     }, OVERALL_TIMEOUT_MS);
@@ -428,7 +479,7 @@ async function main() {
       process.exitCode = 1;
     } else {
       const detail = e?.message ?? String(e);
-      fail(detail, hintFor(detail, port));
+      fail(detail, hintFor(detail, target));
     }
   } finally {
     if (overall) clearTimeout(overall);

@@ -4,7 +4,13 @@
 // サーバとの実結合は scripts/vj-bridge.mjs を使った手動の統合検証で担保する。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleBridgeMessage, initBridgeClient, parseBridgePort } from './bridgeClient';
+import {
+  handleBridgeMessage,
+  initBridgeClient,
+  parseBridgePort,
+  parseRoomId,
+  resolveBridgeUrl,
+} from './bridgeClient';
 import type { GeneratorDefinition } from './types';
 
 // vi.mock はホイストされるので、モックの実体も vi.hoisted で先に用意する。
@@ -56,8 +62,10 @@ class FakeWebSocket {
   }
 }
 
-function stubEnv(search: string): void {
-  vi.stubGlobal('location', { search });
+function stubEnv(search: string, host?: string, protocol?: string): void {
+  // host / protocol は `?room=` の経路だけが読む。既定で省くことで、
+  // ローカル bridge の経路が location の形に依存していないことも一緒に確かめる。
+  vi.stubGlobal('location', { search, host, protocol });
   vi.stubGlobal('WebSocket', FakeWebSocket);
 }
 
@@ -107,6 +115,69 @@ describe('parseBridgePort', () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseRoomId / resolveBridgeUrl
+// ---------------------------------------------------------------------------
+
+describe('parseRoomId', () => {
+  it('returns null when the parameter is absent', () => {
+    expect(parseRoomId('')).toBeNull();
+    expect(parseRoomId('?scene=semantic-synth&bridge=1')).toBeNull();
+  });
+
+  it('accepts base64url ids in the accepted length range', () => {
+    // scripts/vj-ctl.mjs の `room` が吐く形（randomBytes(16) の base64url、22 文字）。
+    expect(parseRoomId('?room=Zm9vYmFyYmF6cXV1eDE')).toBe('Zm9vYmFyYmF6cXV1eDE');
+    expect(parseRoomId('?room=abcd1234')).toBe('abcd1234');
+    expect(parseRoomId('?room=a-b_c-d_')).toBe('a-b_c-d_');
+    expect(parseRoomId(`?room=${'x'.repeat(64)}`)).toBe('x'.repeat(64));
+  });
+
+  it('refuses ids the worker would reject rather than connecting anyway', () => {
+    expect(parseRoomId('?room=')).toBeNull();
+    expect(parseRoomId('?room=short')).toBeNull(); // 8 文字未満
+    expect(parseRoomId(`?room=${'x'.repeat(65)}`)).toBeNull();
+    expect(parseRoomId('?room=has.dot.here')).toBeNull();
+    expect(parseRoomId('?room=has/slash/x')).toBeNull();
+  });
+});
+
+describe('resolveBridgeUrl', () => {
+  it('returns null when neither parameter is present', () => {
+    expect(resolveBridgeUrl('?scene=bars', 'example.com', 'https:')).toBeNull();
+  });
+
+  it('builds a same-origin relay URL, matching the page scheme', () => {
+    expect(resolveBridgeUrl('?room=abcd1234', 'vj.example.com', 'https:')).toBe(
+      'wss://vj.example.com/room/abcd1234',
+    );
+    expect(resolveBridgeUrl('?room=abcd1234', '127.0.0.1:8787', 'http:')).toBe(
+      'ws://127.0.0.1:8787/room/abcd1234',
+    );
+  });
+
+  it('falls back to the local bridge when only bridge is given', () => {
+    expect(resolveBridgeUrl('?bridge=1', 'vj.example.com', 'https:')).toBe('ws://127.0.0.1:7877');
+    expect(resolveBridgeUrl('?bridge=7900', '', '')).toBe('ws://127.0.0.1:7900');
+  });
+
+  it('prefers room over bridge when both are present', () => {
+    expect(resolveBridgeUrl('?bridge=1&room=abcd1234', 'vj.example.com', 'https:')).toBe(
+      'wss://vj.example.com/room/abcd1234',
+    );
+  });
+
+  it('gives up on a room without a host instead of building a broken URL', () => {
+    expect(resolveBridgeUrl('?room=abcd1234', '', 'https:')).toBeNull();
+  });
+
+  it('falls back to the local bridge when the room id is malformed', () => {
+    expect(resolveBridgeUrl('?bridge=1&room=nope', 'vj.example.com', 'https:')).toBe(
+      'ws://127.0.0.1:7877',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // initBridgeClient
 // ---------------------------------------------------------------------------
 
@@ -152,6 +223,25 @@ describe('initBridgeClient', () => {
     const handle = initBridgeClient();
     expect(FakeWebSocket.instances[0].url).toBe('ws://127.0.0.1:7900');
     handle?.close();
+  });
+
+  it('connects to the same-origin relay and announces the synth role', () => {
+    stubEnv('?scene=semantic-synth&room=abcd1234', 'vj.example.com', 'https:');
+    const handle = initBridgeClient();
+    const ws = FakeWebSocket.instances[0];
+    expect(ws.url).toBe('wss://vj.example.com/room/abcd1234');
+
+    ws.onopen?.();
+    // 名乗り方はローカル bridge と同一。中継の実装が変わっても hello は変えない。
+    expect(ws.sent).toEqual(['{"hello":"synth"}']);
+
+    handle?.close();
+  });
+
+  it('does not construct a WebSocket for a malformed room id', () => {
+    stubEnv('?room=nope', 'vj.example.com', 'https:');
+    expect(initBridgeClient()).toBeNull();
+    expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
   it('answers a request frame over the socket', () => {

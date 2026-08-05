@@ -44,6 +44,38 @@ CLI (`scripts/vj-ctl.mjs`) から操縦する。叩いているのは `src/synth
    - `{"error":"no synth connected"}` → 2 のタブが開いていない / `bridge=1` が付いていない
    - `{"error":"timeout after 20s"}` や `ECONNREFUSED` → 1 の bridge が起動していない
 
+## リレー経由で操縦する（Cloudflare Worker）
+
+同じ LAN にいない・ユーザーの端末で開いてもらう・`pnpm bridge` を立てたくないときはこちら。
+ローカル bridge（上の 3 ステップ）と排他ではなく、接続先が変わるだけでプロトコルもコマンドも同じ。
+
+1. room を作る（`vj-ctl.mjs` はこの呼び出しだけ WebSocket を開かない）
+
+   ```bash
+   node scripts/vj-ctl.mjs room --host <worker のホスト名>
+   ```
+
+   `room` / `pageUrl` / `ctlArgs` が JSON で返る。
+
+2. `pageUrl` をユーザーに開いてもらう — `?scene=semantic-synth&room=<id>` が付いている必要がある。
+   ここは**ユーザーに頼む**しかない（こちらからブラウザは開けない）。
+
+3. 疎通確認して、以降は**すべてのコマンドに同じ `--url` を付ける**
+
+   ```bash
+   node scripts/vj-ctl.mjs --url wss://<host>/room/<id> state
+   node scripts/vj-ctl.mjs --url wss://<host>/room/<id> seed "humid-night-market"
+   ```
+
+注意点:
+
+- room id は無認証の合鍵。URL を知っている人は誰でも映像を操縦できるので、公開の場に貼らない。
+  使い捨てにして、本番ごとに `room` コマンドで作り直す。
+- room が違うと `no synth connected` になる（room ごとに中継が完全に分離されている）。
+- ブラウザ側は `?room=<id>` があればリレーへ、`?bridge=1` だけならローカル bridge へ繋ぐ。
+  両方あるときは **room が優先**。
+- リレーは同一オリジンの `wss://` なので mixed content にならず、`pnpm bridge` も不要。
+
 ## コマンド
 
 すべて `node scripts/vj-ctl.mjs <command>`。共通オプションは `--port <n>`（既定 7877）と `--help`。
