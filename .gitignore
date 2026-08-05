@@ -26,3 +26,6 @@ pnpm-debug.log*
 .direnv
 result
 result-*
+
+# Cloudflare / wrangler のローカル状態（DO の storage・キャッシュ）
+.wrangler

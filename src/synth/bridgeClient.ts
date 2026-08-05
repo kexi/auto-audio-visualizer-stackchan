@@ -9,16 +9,26 @@ import type { TimelineOp } from './timeline';
  * このモジュールはその上に載る最初の「外から来る」トランスポートで、中継サーバ
  * （scripts/vj-bridge.mjs）経由で CLI から control を叩けるようにする。
  *
+ * 接続先は 2 通りある。どちらも中継のプロトコルは同一で、違うのは URL だけ:
+ * - `?bridge=1|<port>` … ローカルの中継（scripts/vj-bridge.mjs）
+ * - `?room=<id>`       … 同一オリジンの Cloudflare Worker のリレー（worker/relay.ts）
+ *
  * 設計方針:
- * - 本番の VJ 中に事故らないよう、URL に `bridge` パラメータがあるときだけ有効。
+ * - 本番の VJ 中に事故らないよう、URL に `bridge` か `room` があるときだけ有効。
  *   何も指定しなければ WebSocket を1本も張らない（副作用ゼロ）。
  * - プロトコルの純粋な部分（URL ゲートとメッセージのルーティング）を
- *   parseBridgePort / handleBridgeMessage に切り出し、ソケットの生死管理だけを
+ *   resolveBridgeUrl / handleBridgeMessage に切り出し、ソケットの生死管理だけを
  *   initBridgeClient に残す。こうするとテストが実ネットワーク無しで書ける。
  */
 
 /** `?bridge=1` のときに使う既定ポート。scripts/vj-bridge.mjs の既定と揃えること。 */
 const DEFAULT_BRIDGE_PORT = 7877;
+
+/**
+ * room id として通す形。worker/index.ts の ROOM_PATH と揃えること。
+ * ずれると「ブラウザは繋ぎにいくが Worker が 400 を返す」という分かりにくい形で壊れる。
+ */
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 /** 切断後の再接続間隔。ライブ中に手で貼り直さずに済む程度の短さ。 */
 const RECONNECT_DELAY_MS = 3000;
@@ -48,6 +58,53 @@ export function parseBridgePort(search: string): number | null {
   if (!/^\d+$/.test(raw)) return null;
   const port = Number(raw);
   return port >= 2 && port <= 65535 ? port : null;
+}
+
+/**
+ * URL の query から room id を取り出す。使わない（= リレーに繋がない）なら null。
+ *
+ * 形が違うものを弾いて null に倒すのは port と同じ理由。打ち間違えた id で
+ * 別の room に入り込むより、繋がずに `no synth connected` を出す方が安全。
+ */
+export function parseRoomId(search: string): string | null {
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(search).get('room');
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  return ROOM_ID_PATTERN.test(raw) ? raw : null;
+}
+
+/**
+ * 接続先の WebSocket URL を決める。繋がないなら null。
+ *
+ * `room` を `bridge` より優先するのは、両方付いた URL は「リレー用の URL を
+ * 開いたが、ローカル開発の名残で bridge も残っている」形がほとんどで、
+ * ユーザーが意図しているのは後から足した room の方だから。
+ *
+ * location を丸ごと受け取らずに host / protocol を個別に取るのは、テストから
+ * 呼びやすくするため（location のモックを組み立てなくてよい）。
+ */
+export function resolveBridgeUrl(search: string, host: string, protocol: string): string | null {
+  const room = parseRoomId(search);
+  if (room !== null) {
+    // host が空なのは location が無い環境。繋ぎ先を組み立てられないので諦める。
+    if (host === '') return null;
+    // アプリと同一オリジンなので、ページが https なら wss で揃える（揃えないと
+    // mixed content でブラウザに落とされる）。
+    return `${protocol === 'https:' ? 'wss' : 'ws'}://${host}/room/${room}`;
+  }
+
+  const port = parseBridgePort(search);
+  if (port === null) return null;
+  // アプリは vite の basicSsl により https で配信されるが、ws://127.0.0.1 は
+  // mixed content としてブロックされない: ループバックは仕様上
+  // "potentially trustworthy origin" と定義されているため。
+  // ホスト名に localhost ではなく 127.0.0.1 を使うのは、環境によって localhost が
+  // ::1 に解決され、IPv4 で listen している中継サーバに繋がらないのを避けるため。
+  return `ws://127.0.0.1:${port}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,24 +227,20 @@ export function handleBridgeMessage(raw: string): object | null {
 // ---------------------------------------------------------------------------
 
 /**
- * URL に `bridge` パラメータがあるときだけ中継サーバへ接続する。
+ * URL に `room` か `bridge` パラメータがあるときだけ中継へ接続する。
  * 無効・未指定なら何もせず null を返す。
  */
 export function initBridgeClient(): BridgeClientHandle | null {
   // location が無い環境（Node のテストなど）でも落ちないように読む。
   const loc = globalThis.location as Location | undefined;
-  const port = parseBridgePort(loc?.search ?? '');
-  if (port === null) return null;
+  const resolved = resolveBridgeUrl(loc?.search ?? '', loc?.host ?? '', loc?.protocol ?? '');
+  if (resolved === null) return null;
+  // 下のクロージャから読むので、null を落とした形で束ね直す（クロージャ越しには
+  // 絞り込みが効かない）。
+  const url: string = resolved;
 
   const SocketCtor = globalThis.WebSocket;
   if (typeof SocketCtor !== 'function') return null;
-
-  // アプリは vite の basicSsl により https で配信されるが、ws://127.0.0.1 は
-  // mixed content としてブロックされない: ループバックは仕様上
-  // "potentially trustworthy origin" と定義されているため。
-  // ホスト名に localhost ではなく 127.0.0.1 を使うのは、環境によって localhost が
-  // ::1 に解決され、IPv4 で listen している中継サーバに繋がらないのを避けるため。
-  const url = `ws://127.0.0.1:${port}`;
 
   let disposed = false;
   let socket: WebSocket | null = null;

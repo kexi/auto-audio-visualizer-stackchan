@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Cloudflare Workers Builds 側のプロジェクト名と一致させること。
+  // ずれると Git 連携のビルドが「別の Worker へのデプロイ」になる。
+  "name": "auto-audio-visualizer",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  // ビルド済みアプリ。Workers Builds は `pnpm run build` を先に走らせるので
+  // デプロイ時点で dist/ がある。BASE_PATH を渡さないため base は "/"。
+  "assets": {
+    "directory": "./dist/",
+    "binding": "ASSETS",
+    // `/room/*` だけは Worker を先に通す。アセット側に先に食われると
+    // WebSocket の Upgrade が 404 になる。
+    "run_worker_first": ["/room/*"],
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY_ROOM", "class_name": "RelayRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayRoom"] }],
+
+  "observability": { "enabled": true },
+}
