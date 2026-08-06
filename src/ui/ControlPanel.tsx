@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AudioEngine } from '../audio/AudioEngine';
 import { scenes } from '../scenes';
+import {
+  dbToFraction,
+  INITIAL_CLIP_LATCH,
+  INITIAL_NO_SIGNAL,
+  INITIAL_PEAK_HOLD,
+  nextClipLatch,
+  nextNoSignal,
+  nextPeakHold,
+  SAFE_ZONE_DB,
+  SCALE_TICKS_DB,
+  toDb,
+} from './meter';
 import type { Settings } from './useSettings';
 
 interface ControlPanelProps {
@@ -38,7 +50,18 @@ type TempoStatus = 'tap' | 'lock' | 'search';
 
 /** Coarse UI snapshot refreshed by the meter interval (one React state). */
 interface MeterState {
-  level: number;
+  /** dBFS main-bar fill, 0..1 (from the pre-gain sample peak). */
+  levelFrac: number;
+  /** dBFS peak-hold line position, 0..1. */
+  peakHoldFrac: number;
+  /** Whether the clip latch is currently lit. */
+  clipActive: boolean;
+  /** Whether NO SIGNAL should be shown. */
+  noSignal: boolean;
+  /** Post-gain band levels, 0..1 (already clamped by the engine). */
+  bass: number;
+  mid: number;
+  treble: number;
   beat: boolean;
   bpm: number;
   beatInBar: number;
@@ -46,12 +69,26 @@ interface MeterState {
 }
 
 const INITIAL_METER: MeterState = {
-  level: 0,
+  levelFrac: 0,
+  peakHoldFrac: 0,
+  clipActive: false,
+  noSignal: false,
+  bass: 0,
+  mid: 0,
+  treble: 0,
   beat: false,
   bpm: 0,
   beatInBar: 0,
   status: 'search',
 };
+
+/** Precomputed 0..1 track positions for the dBFS scale ticks (static). */
+const TICK_FRACTIONS = SCALE_TICKS_DB.map((db) => ({ db, frac: dbToFraction(db) }));
+/** Precomputed 0..1 track span for the "safe" gain-staging zone (static). */
+const SAFE_ZONE_FRAC: [number, number] = [
+  dbToFraction(SAFE_ZONE_DB[0]),
+  dbToFraction(SAFE_ZONE_DB[1]),
+];
 
 export function ControlPanel(props: ControlPanelProps): React.ReactElement {
   const {
@@ -105,6 +142,12 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     // Beat-dot flash latch, decoupled from the polling tick so brief grid
     // beats still register.
     let beatLatched = false;
+    // Meter ballistics live here as plain local state, advanced every tick
+    // regardless of whether the tick causes a re-render (below). The engine
+    // never sees these — they're purely a UI concern.
+    let peakHold = INITIAL_PEAK_HOLD;
+    let clipLatch = INITIAL_CLIP_LATCH;
+    let noSignal = INITIAL_NO_SIGNAL;
     const id = window.setInterval(() => {
       const f = engine.peekFrame();
       const fired = (f.tempoLocked ? f.gridBeat : f.beat) || f.beatIntensity > 0.35;
@@ -117,9 +160,25 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
       }
       const status: TempoStatus =
         f.tempoMode === 'manual' ? 'tap' : f.tempoLocked ? 'lock' : 'search';
+
+      // performance.now() (not Date.now()) — guaranteed monotonic, and
+      // matches the clock AudioEngine uses internally. Date.now() can jump
+      // backwards on NTP/system-clock adjustments, which would let the peak
+      // hold/clip latch/no-signal timers freeze or skip.
+      const now = performance.now();
+      peakHold = nextPeakHold(peakHold, f.peak, now);
+      clipLatch = nextClipLatch(clipLatch, f.peak, now);
+      noSignal = nextNoSignal(noSignal, f.peak, f.running, now);
+
       setMeter((prev) => {
         const next: MeterState = {
-          level: f.level,
+          levelFrac: dbToFraction(toDb(f.peak)),
+          peakHoldFrac: dbToFraction(toDb(peakHold.value)),
+          clipActive: clipLatch.active,
+          noSignal: noSignal.active,
+          bass: f.bass,
+          mid: f.mid,
+          treble: f.treble,
           beat: beatLatched,
           bpm: f.bpm,
           beatInBar: f.beatInBar,
@@ -130,7 +189,13 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           prev.beat === next.beat &&
           prev.beatInBar === next.beatInBar &&
           prev.status === next.status &&
-          Math.abs(prev.level - next.level) < 0.005 &&
+          prev.clipActive === next.clipActive &&
+          prev.noSignal === next.noSignal &&
+          Math.abs(prev.levelFrac - next.levelFrac) < 0.004 &&
+          Math.abs(prev.peakHoldFrac - next.peakHoldFrac) < 0.004 &&
+          Math.abs(prev.bass - next.bass) < 0.01 &&
+          Math.abs(prev.mid - next.mid) < 0.01 &&
+          Math.abs(prev.treble - next.treble) < 0.01 &&
           Math.abs(prev.bpm - next.bpm) < 0.05
         ) {
           return prev;
@@ -165,13 +230,61 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
       </button>
 
       <div className="meters">
-        <div className="level-track">
-          <div
-            className="level-fill"
-            style={{ transform: `scaleX(${Math.min(1, meter.level)})` }}
-          />
+        <div className="level-meter">
+          <div className="level-track">
+            <div
+              className="level-safezone"
+              style={{
+                left: `${SAFE_ZONE_FRAC[0] * 100}%`,
+                width: `${(SAFE_ZONE_FRAC[1] - SAFE_ZONE_FRAC[0]) * 100}%`,
+              }}
+            />
+            {TICK_FRACTIONS.map(({ db, frac }) => (
+              <div key={db} className="level-tick-mark" style={{ left: `${frac * 100}%` }} />
+            ))}
+            <div className="level-fill" style={{ transform: `scaleX(${meter.levelFrac})` }} />
+            <div className="level-peak" style={{ left: `${meter.peakHoldFrac * 100}%` }} />
+          </div>
+          <div className="level-ticks">
+            {TICK_FRACTIONS.map(({ db, frac }) => (
+              <span key={db} className="level-tick-label" style={{ left: `${frac * 100}%` }}>
+                {db}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className={`clip-led${meter.clipActive ? ' on' : ''}`} aria-label="clip indicator">
+          CLIP
         </div>
         <div className={`beat-dot${meter.beat ? ' on' : ''}`} aria-label="beat" />
+      </div>
+
+      {/* Always mounted (visibility, not display/conditional render) so it
+          reserves its height and toggling it doesn't shift everything below —
+          distracting when it flickers on/off at a gig. */}
+      <div className={`no-signal${meter.noSignal ? '' : ' hidden'}`} role="status">
+        NO SIGNAL
+      </div>
+
+      <div className="band-bars">
+        <div className="band-bar">
+          <span className="band-label">B</span>
+          <div className="band-track">
+            <div className="band-fill bass" style={{ transform: `scaleX(${meter.bass})` }} />
+          </div>
+        </div>
+        <div className="band-bar">
+          <span className="band-label">M</span>
+          <div className="band-track">
+            <div className="band-fill mid" style={{ transform: `scaleX(${meter.mid})` }} />
+          </div>
+        </div>
+        <div className="band-bar">
+          <span className="band-label">T</span>
+          <div className="band-track">
+            <div className="band-fill treble" style={{ transform: `scaleX(${meter.treble})` }} />
+          </div>
+        </div>
       </div>
 
       <div className="row tempo">

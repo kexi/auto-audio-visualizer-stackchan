@@ -264,13 +264,18 @@ input[type='range'] {
 .meters {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 4px 0 10px;
+  gap: 8px;
+  margin: 4px 0 6px;
+}
+
+/* ---- dBFS input level meter ---- */
+.level-meter {
+  flex: 1;
+  min-width: 0;
 }
 .level-track {
   position: relative;
-  flex: 1;
-  height: 8px;
+  height: 11px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
@@ -278,11 +283,84 @@ input[type='range'] {
 .level-fill {
   position: absolute;
   inset: 0 auto 0 0;
+  z-index: 1;
   border-radius: 6px;
   background: linear-gradient(90deg, hsl(150, 80%, 55%), hsl(50, 90%, 58%), hsl(0, 85%, 58%));
   transform-origin: left center;
   transition: transform 0.06s linear;
 }
+/* "Safe" gain-staging band (-18..-6 dBFS): a faint tint painted over the
+   fill so it stays visible regardless of the current level. */
+.level-safezone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset -1px 0 0 rgba(255, 255, 255, 0.22);
+  pointer-events: none;
+}
+.level-tick-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+.level-peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 2px;
+  transform: translateX(-50%);
+  background: #fff;
+  box-shadow: 0 0 4px 1px rgba(255, 255, 255, 0.7);
+  transition: left 0.05s linear;
+  pointer-events: none;
+}
+.level-ticks {
+  position: relative;
+  height: 10px;
+  margin-top: 2px;
+}
+.level-tick-label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 8.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--panel-fg-dim);
+}
+
+.clip-led {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--panel-fg-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border);
+  transition:
+    background 0.1s ease,
+    color 0.1s ease,
+    border-color 0.1s ease,
+    box-shadow 0.1s ease;
+}
+.clip-led.on {
+  color: #fff;
+  background: hsl(355, 78%, 52%);
+  border-color: hsl(355, 85%, 62%);
+  box-shadow: 0 0 8px 1px rgba(255, 60, 60, 0.7);
+}
+
 .beat-dot {
   width: 12px;
   height: 12px;
@@ -297,6 +375,70 @@ input[type='range'] {
 .beat-dot.on {
   background: hsl(200, 95%, 65%);
   box-shadow: 0 0 14px 3px rgba(120, 200, 255, 0.8);
+}
+
+/* ---- NO SIGNAL banner ---- */
+.no-signal {
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: hsl(38, 95%, 82%);
+  background: rgba(240, 170, 50, 0.14);
+  border: 1px solid rgba(245, 185, 70, 0.4);
+}
+/* Kept in the layout (not display:none) so appearing/disappearing doesn't
+   shift the rows below it. */
+.no-signal.hidden {
+  visibility: hidden;
+}
+
+/* ---- Bass / mid / treble band bars ---- */
+.band-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 10px;
+}
+.band-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.band-label {
+  flex: 0 0 12px;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--panel-fg-dim);
+  text-align: center;
+}
+.band-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.band-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  transform-origin: left center;
+  transition: transform 0.06s linear;
+}
+.band-fill.bass {
+  background: hsl(210, 85%, 62%);
+}
+.band-fill.mid {
+  background: hsl(150, 70%, 55%);
+}
+.band-fill.treble {
+  background: hsl(42, 92%, 58%);
 }
 
 /* ---- Tempo (BPM) section ---- */

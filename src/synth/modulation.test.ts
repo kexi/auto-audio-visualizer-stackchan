@@ -15,6 +15,8 @@ function makeAudio(partial: Partial<AudioFrame> = {}): AudioFrame {
     freq: new Uint8Array(0),
     wave: new Uint8Array(0),
     level: 0,
+    levelRaw: 0,
+    peak: 0,
     bass: 0,
     mid: 0,
     treble: 0,
