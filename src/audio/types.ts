@@ -6,6 +6,19 @@ export interface AudioFrame {
   wave: Uint8Array<ArrayBuffer>;
   /** Smoothed overall loudness, 0..1 (RMS * gain, clamped). */
   level: number;
+  /**
+   * Pre-gain smoothed RMS, 0..1 (same smoothing as {@link level} but before
+   * the gain multiply / clamp). Meant for calibration UI — unaffected by the
+   * gain slider so it reflects the actual input signal.
+   */
+  levelRaw: number;
+  /**
+   * Pre-gain sample peak for the current analysis window, 0..1
+   * (`max(|sample|)`, not smoothed). Used for dBFS metering and clip
+   * detection, which need the true instantaneous peak rather than an
+   * averaged/gained value.
+   */
+  peak: number;
   /** Low-band energy, 0..1 (* gain, clamped). */
   bass: number;
   /** Mid-band energy, 0..1 (* gain, clamped). */

@@ -48,6 +48,12 @@ export class AudioEngine {
 
   private readonly freq: Uint8Array<ArrayBuffer> = new Uint8Array(BIN_COUNT);
   private readonly wave: Uint8Array<ArrayBuffer> = new Uint8Array(FFT_SIZE);
+  /**
+   * Float time-domain scratch buffer, used only for the sample-peak
+   * calculation (see the comment in {@link getFrame}). Allocated once, never
+   * exposed on {@link AudioFrame}.
+   */
+  private readonly waveFloat: Float32Array<ArrayBuffer> = new Float32Array(FFT_SIZE);
 
   /** Bin index ranges for each band, computed once the context exists. */
   private bassBins: [number, number] = [0, 0];
@@ -203,6 +209,7 @@ export class AudioEngine {
     if (!this._running || !this.analyser) {
       this.freq.fill(0);
       this.wave.fill(128);
+      this.waveFloat.fill(0);
       this.smoothLevel = 0;
       this.smoothBass = 0;
       this.smoothMid = 0;
@@ -210,6 +217,8 @@ export class AudioEngine {
       this.beatIntensity = 0;
       this.prevRawBass = 0;
       f.level = 0;
+      f.levelRaw = 0;
+      f.peak = 0;
       f.bass = 0;
       f.mid = 0;
       f.treble = 0;
@@ -225,14 +234,37 @@ export class AudioEngine {
 
     this.analyser.getByteFrequencyData(this.freq);
     this.analyser.getByteTimeDomainData(this.wave);
+    this.analyser.getFloatTimeDomainData(this.waveFloat);
 
-    // RMS over the time-domain signal (128 = silence) → 0..1.
+    // RMS over the time-domain signal (128 = silence) → 0..1. Deliberately
+    // still computed from the 8-bit byte buffer: it's an average over 2048
+    // samples, so 8-bit quantization error washes out in the mean, and
+    // reusing `this.wave` keeps `level`/`levelRaw` byte-for-byte identical to
+    // before (scenes depend on their exact values).
     let sumSq = 0;
     for (let i = 0; i < this.wave.length; i++) {
       const s = (this.wave[i] - 128) / 128;
       sumSq += s * s;
     }
     const rms = Math.sqrt(sumSq / this.wave.length);
+
+    // Sample peak from the *float* time-domain buffer, not the byte one.
+    // `max()` doesn't average away quantization error the way RMS does: the
+    // 8-bit buffer's smallest step is 1/128 ≈ -42dBFS, so a peak derived from
+    // it could never read below -42dBFS — dead-ending the bottom third of the
+    // -60..0dBFS meter and making `SILENCE_PEAK_THRESHOLD` (which sits below
+    // that floor) effectively mean "exactly digital silence" instead of "very
+    // quiet". getFloatTimeDomainData has no such resolution ceiling, so the
+    // peak (and everything built on it — the dBFS meter's low end, clip
+    // detection, no-signal detection) is accurate down to the true noise
+    // floor. This is a second `getXTimeDomainData` call per frame, but still
+    // just one peak loop (over the float buffer instead of the byte one) —
+    // no extra pass over the byte buffer.
+    let peak = 0;
+    for (let i = 0; i < this.waveFloat.length; i++) {
+      const a = Math.abs(this.waveFloat[i]);
+      if (a > peak) peak = a;
+    }
 
     const rawBass = this.bandAverage(this.bassBins);
     const rawMid = this.bandAverage(this.midBins);
@@ -245,6 +277,8 @@ export class AudioEngine {
     this.smoothTreble += (rawTreble - this.smoothTreble) * 0.4;
 
     f.level = clamp01(this.smoothLevel * gain);
+    f.levelRaw = this.smoothLevel;
+    f.peak = peak;
     f.bass = clamp01(this.smoothBass * gain);
     f.mid = clamp01(this.smoothMid * gain);
     f.treble = clamp01(this.smoothTreble * gain);
@@ -279,6 +313,8 @@ export class AudioEngine {
       freq,
       wave,
       level: 0,
+      levelRaw: 0,
+      peak: 0,
       bass: 0,
       mid: 0,
       treble: 0,
