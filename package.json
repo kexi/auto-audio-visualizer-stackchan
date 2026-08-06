@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "bridge": "node scripts/vj-bridge.mjs",
+    "measure:coverage": "node scripts/measure-coverage.mjs",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "format": "oxfmt",
