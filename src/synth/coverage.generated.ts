@@ -322,6 +322,22 @@ export const GENERATOR_COVERAGE: CoverageTable = {
     meanAlpha: { p10: 0.488, p50: 0.7809, p90: 0.8967 },
     solidFraction: { p10: 0.491, p50: 0.8086, p90: 0.9146 },
   },
+  sdfBlob: {
+    meanAlpha: { p10: 0.0176, p50: 0.03, p90: 0.0608 },
+    solidFraction: { p10: 0.0075, p50: 0.0103, p90: 0.0185 },
+  },
+  sdfCube: {
+    meanAlpha: { p10: 0.052, p50: 0.1259, p90: 0.2281 },
+    solidFraction: { p10: 0.0163, p50: 0.0385, p90: 0.1806 },
+  },
+  sdfLattice: {
+    meanAlpha: { p10: 0.1914, p50: 0.2408, p90: 0.3232 },
+    solidFraction: { p10: 0.0386, p50: 0.0753, p90: 0.177 },
+  },
+  sdfTunnel: {
+    meanAlpha: { p10: 0.2535, p50: 0.326, p90: 0.344 },
+    solidFraction: { p10: 0.0218, p50: 0.0484, p90: 0.0745 },
+  },
   seaSalt: {
     meanAlpha: { p10: 0.4755, p50: 0.6219, p90: 0.7676 },
     solidFraction: { p10: 0.4756, p50: 0.7466, p90: 0.8892 },
