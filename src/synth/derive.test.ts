@@ -5,8 +5,21 @@ import { derivePatch } from './derive';
 import { createInlineCatalog, inlineCatalog } from './generators';
 import type { InlineGenerator } from './generators/types';
 import { serializePatch } from './schema';
-import type { VisualOperator, VisualPatch } from './types';
+import type { QualityTier, VisualOperator, VisualPatch } from './types';
 import { validatePatch } from './validate';
+
+const QUALITY_TIERS: readonly QualityTier[] = ['low', 'medium', 'high'];
+
+/** Generators the tier filter is there for: heavy is banned outright at low. */
+const HEAVY_SOURCE_IDS = inlineCatalog
+  .all()
+  .filter(
+    (g) =>
+      g.def.category === 'source' &&
+      g.def.costClass === 'heavy' &&
+      (g.def.textures?.length ?? 0) === 0,
+  )
+  .map((g) => g.def.id);
 
 /**
  * Sources the seed gacha may pick. Generators with a texture input are excluded
@@ -311,6 +324,111 @@ describe('synth/derive', () => {
       // Fake win rate as primary should also be in a plausible band around 1/(n+1).
       expect(fakeRate).toBeGreaterThan(expected * 0.4);
       expect(fakeRate).toBeLessThan(0.45);
+    });
+  });
+
+  describe('tier-aware candidate filter', () => {
+    it('the catalog really has heavy sources (otherwise these tests prove nothing)', () => {
+      expect(HEAVY_SOURCE_IDS.length).toBeGreaterThan(0);
+      expect(HEAVY_SOURCE_IDS).toContain('sdfTunnel');
+      // …and low tier really bans them, so the filter has something to do.
+      expect(DEFAULT_BUDGETS.low.maxHeavyGenerators).toBe(0);
+    });
+
+    it('every quality tier × 400 seeds: derivePatch never throws and stays in budget', () => {
+      const catalog = defCatalogFrom();
+      const failures: string[] = [];
+
+      for (const tier of QUALITY_TIERS) {
+        for (let i = 0; i < 400; i++) {
+          const seed = `tier-sweep-${tier}-${i}`;
+          try {
+            const patch = derivePatch(seed, { catalog: inlineCatalog, qualityTier: tier });
+            expect(patch.qualityTier).toBe(tier);
+            const vIssues = validatePatch(patch, catalog);
+            const bIssues = fitsBudget(estimateCost(patch, catalog), DEFAULT_BUDGETS[tier]);
+            if (vIssues.length > 0 || bIssues.length > 0) {
+              failures.push(
+                `${seed}: validate=${JSON.stringify(vIssues)} budget=${JSON.stringify(bIssues)}`,
+              );
+            }
+          } catch (e) {
+            failures.push(`${seed}: threw ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      }
+
+      expect(
+        failures.slice(0, 5),
+        `${failures.length}/${QUALITY_TIERS.length * 400} tier×seed combinations failed`,
+      ).toEqual([]);
+    });
+
+    it('heavy sources are absent at low tier and present at high tier', () => {
+      const heavy = new Set(HEAVY_SOURCE_IDS);
+      const lowOffenders: string[] = [];
+      const seenAtHigh = new Set<string>();
+
+      for (let i = 0; i < 1500; i++) {
+        const seed = `heavy-tier-${i}`;
+        for (const op of derivePatch(seed, { catalog: inlineCatalog, qualityTier: 'low' })
+          .operators) {
+          if (heavy.has(op.generatorId)) lowOffenders.push(`${seed}: ${op.generatorId}`);
+        }
+        for (const op of derivePatch(seed, { catalog: inlineCatalog, qualityTier: 'high' })
+          .operators) {
+          if (heavy.has(op.generatorId)) seenAtHigh.add(op.generatorId);
+        }
+      }
+
+      expect(lowOffenders.slice(0, 3), 'heavy generator derived at low tier').toEqual([]);
+      for (const id of HEAVY_SOURCE_IDS) {
+        expect(seenAtHigh.has(id), `heavy source "${id}" never derived at high tier`).toBe(true);
+      }
+    });
+
+    it('the rule is budget-general, not a costClass check (passes are filtered too)', () => {
+      // light costClass, but 99 passes: over maxPasses at every tier.
+      const passHog: InlineGenerator = {
+        def: {
+          id: 'pass-hog-zz',
+          version: 1,
+          category: 'source',
+          costClass: 'light',
+          impl: 'inline',
+          output: 'field',
+          tags: {},
+          parameters: [],
+          cost: { passes: 99, relativeFill: 0.1, stateful: false },
+        },
+        emit: (ctx) => `float ${ctx.fnName}(vec2 p) { return 0.0; }`,
+      };
+      const catalog = createInlineCatalog([...inlineCatalog.all(), passHog]);
+
+      for (const tier of QUALITY_TIERS) {
+        for (let i = 0; i < 300; i++) {
+          const patch = derivePatch(`pass-hog-${tier}-${i}`, { catalog, qualityTier: tier });
+          expect(
+            patch.operators.some((op) => op.generatorId === 'pass-hog-zz'),
+            `pass-hog-zz was derived at ${tier}`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it('a catalog whose only sources are heavy has no low-tier pool at all', () => {
+      const heavy = new Set(HEAVY_SOURCE_IDS);
+      const heavyOnly = createInlineCatalog(
+        inlineCatalog.all().filter((g) => g.def.category !== 'source' || heavy.has(g.def.id)),
+      );
+      // The filter empties the low-tier source pool, so derive fails with the
+      // catalog-shaped error rather than the unstrippable-patch one.
+      expect(() => derivePatch('heavy-only', { catalog: heavyOnly, qualityTier: 'low' })).toThrow(
+        /need at least 1 source generator/,
+      );
+      expect(() =>
+        derivePatch('heavy-only', { catalog: heavyOnly, qualityTier: 'high' }),
+      ).not.toThrow();
     });
   });
 

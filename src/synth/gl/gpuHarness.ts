@@ -261,6 +261,14 @@ export interface FrameStats {
   /** True when every pixel carries identical RGBA. */
   uniform: boolean;
   /**
+   * Distinct non-zero alpha byte values in the frame, 0..255.
+   *
+   * A proxy for tonal continuity. Flat shading collapses an object into a
+   * handful of levels; a shaded 3D surface lands in the hundreds. Only the
+   * count crosses the boundary — the histogram itself stays in the browser.
+   */
+  distinctAlphaLevels: number;
+  /**
    * `alphaCount` per horizontal quarter of the frame, bottom-first —
    * readPixels starts at the bottom row, so index 0 is the bottom quarter.
    */
@@ -503,8 +511,11 @@ async function runInBrowser(
         solidFraction: number;
         alphaCount: number;
         uniform: boolean;
+        distinctAlphaLevels: number;
         quarterAlphaCounts: number[];
       }> = [];
+      /** Reused across draws; 256 bytes beats allocating a Set per frame. */
+      const alphaSeen = new Uint8Array(256);
       // `null` = draw once with the uTime already bound above.
       const draws: Array<number | null> = times === null ? [null] : times;
 
@@ -522,6 +533,7 @@ async function runInBrowser(
         let nonZero = 0;
         let uniform = true;
         const quarterAlphaCounts: number[] = Array.from({ length: QUARTERS }, () => 0);
+        alphaSeen.fill(0);
         const r0 = buf[0]!,
           g0 = buf[1]!,
           b0 = buf[2]!,
@@ -535,6 +547,7 @@ async function runInBrowser(
           if (a > 127) solid++;
           if (a !== 0) {
             nonZero++;
+            alphaSeen[a] = 1;
             // trailing pixels of a non-divisible frame fall in the last quarter
             const q = Math.min(QUARTERS - 1, Math.floor(p / quarterPixels));
             quarterAlphaCounts[q]!++;
@@ -544,11 +557,17 @@ async function runInBrowser(
           }
         }
 
+        let distinctAlphaLevels = 0;
+        for (let a = 1; a < 256; a++) {
+          if (alphaSeen[a] !== 0) distinctAlphaLevels++;
+        }
+
         frames.push({
           meanAlpha: sum / (pixelCount * 255),
           solidFraction: solid / pixelCount,
           alphaCount: nonZero,
           uniform,
+          distinctAlphaLevels,
           quarterAlphaCounts,
         });
       }

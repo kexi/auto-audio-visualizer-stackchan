@@ -63,6 +63,14 @@ function gridMaterialPatches(): NamedPatch[] {
   }));
 }
 
+/**
+ * The raymarched (SDF) sources. They are singled out because a 3D source is the
+ * one kind that can silently degrade into a flat-shaded blob: a cube face has a
+ * constant normal, so a plain NdotL quantises the whole object to a handful of
+ * levels and the material downstream receives almost no information.
+ */
+const RAYMARCHED_SOURCE_IDS = ['sdfTunnel', 'sdfLattice', 'sdfBlob', 'sdfCube'] as const;
+
 /** Unique patches from the source and material sets (dedupe by label). */
 function allRenderPatches(): NamedPatch[] {
   const byLabel = new Map<string, NamedPatch>();
@@ -251,6 +259,42 @@ describe('synth/gl assemblePatch GPU render', () => {
         quarterPixels / 2,
       );
       expect(top, 'the transparent rows must appear at the top of the frame').toBe(0);
+    },
+    renderTimeoutMs,
+  );
+
+  it(
+    `raymarched sources render continuous tone (${RAYMARCHED_SOURCE_IDS.length} patches)`,
+    async () => {
+      const neon = requireGen('neon');
+      const failures: string[] = [];
+
+      for (const id of RAYMARCHED_SOURCE_IDS) {
+        const src = requireGen(id);
+        const named: NamedPatch = {
+          label: `source:${id}+material:neon`,
+          patch: basePatch([opFromDef('src0', src.def), opFromDef('mat0', neon.def)], SEED),
+        };
+        const result = await renderPatch(pg, named);
+        if (!result.ok) {
+          failures.push(`${named.label}: ${result.log}`);
+          continue;
+        }
+        const levels = result.frame.distinctAlphaLevels;
+        console.log(`[render.gpu.test] ${id}: ${levels} distinct alpha levels`);
+        // Measured 144–192 for the four SDF sources; a flat-shaded solid would
+        // land in the single digits. 40 leaves room for driver differences while
+        // still failing loudly if the shading collapses into steps.
+        if (levels < 40) {
+          failures.push(
+            `${named.label}: only ${levels} distinct alpha levels — shading looks quantised`,
+          );
+        }
+      }
+
+      if (failures.length > 0) {
+        throw new Error(`raymarched source tone check failed:\n\n${failures.join('\n')}`);
+      }
     },
     renderTimeoutMs,
   );

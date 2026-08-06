@@ -60,6 +60,51 @@ function needsTexture(gen: InlineGenerator): boolean {
   return (gen.def.textures?.length ?? 0) > 0;
 }
 
+/** 単体 Patch を組むための固定値。予算判定は operators と qualityTier しか見ない。 */
+const PROBE_PALETTE: VisualPatch['palette'] = {
+  mode: 'mono',
+  hueOffset: 0,
+  saturation: 0,
+  lightness: 50,
+};
+const PROBE_COMPOSITION: VisualPatch['composition'] = { symmetry: 1, scale: 1, speed: 1 };
+
+/**
+ * その Generator **1 個だけ**の Patch が、その tier の予算に既に違反しないか。
+ *
+ * 違反する Generator を候補に残すと、strip では逃げ切れない seed が生まれる:
+ * stripOneOperator は source が 1 個になると null を返すので、単体で予算オーバー
+ * する source が src0 に座った瞬間 derivePatch が throw する（low tier の
+ * `maxHeavyGenerators === 0` に heavy な source がぶつかるのが典型）。
+ *
+ * costClass === 'heavy' の決め打ちではなく estimateCost + fitsBudget で判定する
+ * ので、passes 上限・stateful 上限にも同じ規則が自動的に効く。rendezvous hashing
+ * なので、除外の影響は該当 slot だけに閉じる（他 slot の seed→Generator は不変）。
+ */
+function fitsBudgetAlone(
+  gen: InlineGenerator,
+  defCatalog: ReturnType<typeof createCatalog>,
+  qualityTier: QualityTier,
+): boolean {
+  const probe: VisualPatch = {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    seed: '',
+    operators: [
+      {
+        id: 'probe',
+        generatorId: gen.def.id,
+        generatorVersion: gen.def.version,
+        parameters: {},
+      },
+    ],
+    routes: [],
+    palette: PROBE_PALETTE,
+    composition: PROBE_COMPOSITION,
+    qualityTier,
+  };
+  return fitsBudget(estimateCost(probe, defCatalog), DEFAULT_BUDGETS[qualityTier]).length === 0;
+}
+
 /** Inclusive integer in [min, max]. Avoids off-by-one when rand is in [0, 1). */
 function randInt(seed: string, ns: string, index: number, min: number, max: number): number {
   if (max <= min) return min;
@@ -337,7 +382,13 @@ export function derivePatch(seed: string, opts: DeriveOptions): VisualPatch {
   // is something the operator deliberately brings, so the seed gacha must not
   // make the event logo pop in and out on its own. They stay fully available to
   // hand-built patches (proposePatch) — only the rendezvous pools exclude them.
-  const selectable = gens.filter((g) => !needsTexture(g));
+  //
+  // Same place, same style: a Generator that blows the tier budget on its own is
+  // dropped from the pools too. Otherwise the strip loop can be handed a patch it
+  // is structurally unable to shrink (see fitsBudgetAlone).
+  const selectable = gens.filter(
+    (g) => !needsTexture(g) && fitsBudgetAlone(g, defCatalog, qualityTier),
+  );
 
   const pool: Record<GeneratorCategory, InlineGenerator[]> = {
     source: selectable.filter((g) => g.def.category === 'source'),
