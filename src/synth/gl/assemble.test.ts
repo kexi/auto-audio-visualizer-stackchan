@@ -8,6 +8,7 @@ import {
   uniformName,
 } from './assemble';
 import { createInlineCatalog, inlineCatalog, stampGenerator } from '../generators';
+import { knownPreludeKeys, resolvePreludes } from './preludes';
 import type { GeneratorDefinition, VisualPatch } from '../types';
 import type { EmitContext, InlineGenerator } from '../generators/types';
 
@@ -228,6 +229,11 @@ describe('synth/gl/assemblePatch texture slots', () => {
     expect(a.textures).toEqual(b.textures);
   });
 
+  it('assembles a patch whose generator declares a slot but no prelude', () => {
+    const { fragSrc } = assemblePatch(stampPatch(), inlineCatalog);
+    expect(fragSrc).not.toContain('shared preludes');
+  });
+
   it('throws when a generator asks for a slot it never declared', () => {
     const badDef: GeneratorDefinition = {
       ...stampGenerator.def,
@@ -248,5 +254,125 @@ describe('synth/gl/assemblePatch texture slots', () => {
       ],
     };
     expect(() => assemblePatch(patch, catalog)).toThrow(/does not declare/);
+  });
+});
+
+/** Count non-overlapping occurrences of a literal substring. */
+function countOccurrences(haystack: string, needle: string): number {
+  let n = 0;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return n;
+    n += 1;
+    from = at + needle.length;
+  }
+}
+
+/** A minimal inline source that declares the given prelude keys. */
+function preludeSource(id: string, preludes: readonly string[]): InlineGenerator {
+  const def: GeneratorDefinition = {
+    id,
+    version: 1,
+    category: 'source',
+    costClass: 'light',
+    impl: 'inline',
+    output: 'field',
+    tags: {},
+    parameters: [],
+    cost: { passes: 0, relativeFill: 0.1, stateful: false },
+  };
+  return {
+    def,
+    preludes,
+    emit: (ctx: EmitContext) =>
+      `float ${ctx.fnName}(vec2 p) { return sd3Sphere(vec3(p, 0.0), 0.5); }`,
+  };
+}
+
+/** Patch of the given generator ids, in order, closed off with a neon material. */
+function patchOf(ids: string[]): VisualPatch {
+  const base = defaultPatch();
+  return {
+    ...base,
+    operators: [
+      ...ids.map((generatorId, i) => ({
+        id: `src${i}`,
+        generatorId,
+        generatorVersion: 1,
+        parameters: {},
+      })),
+      base.operators[3]!,
+    ],
+  };
+}
+
+describe('synth/gl preludes', () => {
+  const SPHERE_DECL = 'float sd3Sphere(vec3 p, float r) {';
+
+  it('resolvePreludes dedupes and keeps first-seen order', () => {
+    const once = resolvePreludes(['sdf3d']);
+    expect(once).toContain(SPHERE_DECL);
+    expect(resolvePreludes(['sdf3d', 'sdf3d', 'sdf3d'])).toBe(once);
+    expect(resolvePreludes([])).toBe('');
+    expect(knownPreludeKeys()).toContain('sdf3d');
+  });
+
+  it('resolvePreludes throws on an unknown key instead of skipping it', () => {
+    expect(() => resolvePreludes(['sdf3d', 'no-such-prelude'])).toThrow(
+      /unknown prelude "no-such-prelude"/,
+    );
+  });
+
+  it('two generators requesting the same prelude emit it exactly once', () => {
+    const catalog = createInlineCatalog([
+      preludeSource('prelude-a', ['sdf3d']),
+      preludeSource('prelude-b', ['sdf3d']),
+      ...inlineCatalog.all(),
+    ]);
+    const { fragSrc } = assemblePatch(patchOf(['prelude-a', 'prelude-b']), catalog);
+    expect(countOccurrences(fragSrc, SPHERE_DECL)).toBe(1);
+    // both generator bodies are still emitted — dedupe must not drop an operator
+    expect(fragSrc).toMatch(/float source_0\(vec2 p\)/);
+    expect(fragSrc).toMatch(/float source_1\(vec2 p\)/);
+  });
+
+  it('the real 3D generators share one copy of sdf3d', () => {
+    const patch = patchOf(['sdfTunnel', 'sdfLattice', 'sdfBlob', 'sdfCube']);
+    const { fragSrc } = assemblePatch(patch, inlineCatalog);
+    expect(countOccurrences(fragSrc, SPHERE_DECL)).toBe(1);
+    expect(countOccurrences(fragSrc, 'vec2 rot2(vec2 p, float a) {')).toBe(1);
+  });
+
+  it('the prelude is emitted before every generator function', () => {
+    const { fragSrc } = assemblePatch(patchOf(['sdfTunnel', 'sdfBlob']), inlineCatalog);
+    const preludeAt = fragSrc.indexOf(SPHERE_DECL);
+    const genAt = fragSrc.indexOf('// --- generator functions ---');
+    expect(preludeAt).toBeGreaterThanOrEqual(0);
+    expect(genAt).toBeGreaterThanOrEqual(0);
+    expect(preludeAt).toBeLessThan(genAt);
+  });
+
+  it('patches without a prelude request keep a prelude-free source', () => {
+    const { fragSrc } = assemblePatch(defaultPatch(), inlineCatalog);
+    expect(fragSrc).not.toContain('sd3Sphere');
+    expect(fragSrc).not.toContain('// --- shared preludes ---');
+  });
+
+  it('assemblePatch throws when a generator declares an unknown prelude', () => {
+    const catalog = createInlineCatalog([
+      preludeSource('bad-prelude', ['sdf3d', 'totally-made-up']),
+      ...inlineCatalog.all(),
+    ]);
+    expect(() => assemblePatch(patchOf(['bad-prelude']), catalog)).toThrow(
+      /unknown prelude "totally-made-up"/,
+    );
+  });
+
+  it('prelude emission stays deterministic', () => {
+    const patch = patchOf(['sdfCube', 'sdfTunnel']);
+    expect(assemblePatch(patch, inlineCatalog).fragSrc).toBe(
+      assemblePatch(patch, inlineCatalog).fragSrc,
+    );
   });
 });

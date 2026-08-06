@@ -19,6 +19,14 @@ import type { GeneratorDefinition } from '../types';
 export interface InlineGenerator {
   def: GeneratorDefinition; // impl is 'inline'
   /**
+   * 共有 GLSL プリリュードのキー（`gl/preludes.ts` のレジストリ）。
+   *
+   * assembler が Patch 全体で重複排除し、Generator 関数群の前に一度だけ出力する。
+   * 純粋に GLSL codegen の関心なので `GeneratorDefinition`（保存・検証されるメタ
+   * データ）ではなく実装側に置く。未知のキーは assemble 時に throw する。
+   */
+  preludes?: readonly string[];
+  /**
    * GLSL function body. Function name is given as fnName (unique within Patch).
    * Parameters are referenced via uniform names from uniform(paramId).
    */

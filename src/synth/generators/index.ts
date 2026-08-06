@@ -77,6 +77,10 @@ import { risoGenerator } from './riso';
 import { rippleGenerator } from './ripple';
 import { roadStitchGenerator } from './roadStitch';
 import { scalerRingingGenerator } from './scalerRinging';
+import { sdfBlobGenerator } from './sdfBlob';
+import { sdfCubeGenerator } from './sdfCube';
+import { sdfLatticeGenerator } from './sdfLattice';
+import { sdfTunnelGenerator } from './sdfTunnel';
 import { scanSlipGenerator } from './scanSlip';
 import { scooterSlipstreamGenerator } from './scooterSlipstream';
 import { seaSaltGenerator } from './seaSalt';
@@ -142,6 +146,10 @@ export { chainlinkGenerator, chainlinkDef } from './chainlink';
 export { barcodeGenerator, barcodeDef } from './barcode';
 export { petalsGenerator, petalsDef } from './petals';
 export { urokoGenerator, urokoDef } from './uroko';
+export { sdfTunnelGenerator, sdfTunnelDef } from './sdfTunnel';
+export { sdfLatticeGenerator, sdfLatticeDef } from './sdfLattice';
+export { sdfBlobGenerator, sdfBlobDef } from './sdfBlob';
+export { sdfCubeGenerator, sdfCubeDef } from './sdfCube';
 export { noiseGenerator, noiseDef } from './noise';
 export { vortexGenerator, vortexDef } from './vortex';
 export { flowGenerator, flowDef } from './flow';
@@ -246,6 +254,12 @@ const ALL: InlineGenerator[] = [
   barcodeGenerator,
   petalsGenerator,
   urokoGenerator,
+  // 3D (SDF レイマーチ) source — costClass: heavy。low tier では derive の候補から
+  // 外れる（derive.ts の fitsBudgetAlone）。
+  sdfTunnelGenerator,
+  sdfLatticeGenerator,
+  sdfBlobGenerator,
+  sdfCubeGenerator,
   // 画像入力を持つ source（seed ガチャの対象外 — derive.ts が textures 持ちを除外する）
   stampGenerator,
   // fields

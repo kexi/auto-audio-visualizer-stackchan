@@ -6,6 +6,7 @@ import type {
 } from '../types';
 import type { InlineGenerator, InlineGeneratorCatalog } from '../generators/types';
 import { RNG_GLSL } from '../rng.glsl';
+import { resolvePreludes } from './preludes';
 
 export const SEED_UNIFORM = 'uSeed';
 
@@ -117,6 +118,8 @@ export function assemblePatch(
   const uniforms: AssembledShader['uniforms'] = [];
   const nsUniforms: AssembledShader['nsUniforms'] = [];
   const textures: TextureBinding[] = [];
+  /** Prelude keys in operator order; resolvePreludes dedupes and keeps first-seen order. */
+  const preludeKeys: string[] = [];
 
   // Resolve operators in stable order (patch.operators appearance order).
   const resolved: ResolvedOp[] = [];
@@ -150,6 +153,7 @@ export function assemblePatch(
       sizeName: textureSizeUniformName(op.id, slot),
     }));
     textures.push(...opTextures);
+    preludeKeys.push(...(gen.preludes ?? []));
     resolved.push({ op, gen, def: gen.def, role, fnName, nsName, textures: opTextures });
     nsUniforms.push({ opId: op.id, name: nsName });
     for (const param of gen.def.parameters) {
@@ -198,6 +202,16 @@ export function assemblePatch(
     lines.push(`uniform uint ${r.nsName};`);
   }
   lines.push('');
+
+  // ---- shared preludes (declared via InlineGenerator.preludes) ----
+  // Emitted once per Patch, ahead of every generator function, so several
+  // generators can share e.g. the 3D SDF primitives without duplicate defs.
+  const preludeSrc = resolvePreludes(preludeKeys);
+  if (preludeSrc.length > 0) {
+    lines.push('// --- shared preludes ---');
+    lines.push(preludeSrc);
+    lines.push('');
+  }
 
   // ---- emitted generator functions (operators array order) ----
   lines.push('// --- generator functions ---');
