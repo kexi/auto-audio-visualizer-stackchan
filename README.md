@@ -24,9 +24,46 @@ just all           # format/lint/security/test/build をまとめて検証
 direnv を使わない場合も、`nix develop --command just all` のように実行できます。
 
 `stackchan/lib/visualizer_core` はハードウェアに依存せず、ホストと CoreS3
-ファームウェアの両方から利用します。現在の CoreS3 実装は内蔵マイクの RMS
-レベルを顔とバーへ反映する最小構成です。サーボや Stack-chan BSP との統合は、
-実機確認が可能になった段階でこの境界の外側へ追加できます。
+ファームウェアの両方から利用します。共通コアには PCM 音声解析、BPM
+自動検出・タップテンポ、設定、決定的な look gacha、11 シーン、秒・小節・外部
+アンカー対応 Timeline が含まれます。CoreS3 側は内蔵マイク、320×240
+ダブルバッファ描画、Stack-chan のタッチセンサー・サーボ・RGB、NVSへの設定保存へ
+接続済みです。
+
+CoreS3画面は、短いタップで左から「前のシーン / TAP / 次のシーン」、長押しで
+「÷2 / AUTO / ×2」として操作できます。本体タッチセンサーはクリックでガチャ、
+前後スワイプでシーン切替です。
+
+USB Serial（115200 baud）は、1行1JSONの制御要求を受け付けます。応答は既存Bridgeと
+同じ`{"id": ..., "result": ...}`または`{"id": ..., "error": ...}`形式です。
+
+```json
+{"id":1,"method":"getState"}
+{"id":2,"method":"proposeSeed","params":{"seed":"neon-tiger-042"}}
+{"id":3,"method":"setScene","params":{"scene":"aurora"}}
+{"id":4,"method":"shiftScene","params":{"delta":1}}
+{"id":5,"method":"tapTempo"}
+{"id":6,"method":"tempoMultiply","params":{"factor":2}}
+{"id":7,"method":"tempoAuto"}
+{"id":8,"method":"reroll"}
+```
+
+### 移植状況
+
+| 機能 | ホスト | CoreS3 | 備考 |
+| --- | --- | --- | --- |
+| PCM解析・BPM・ビートグリッド | 対応 | 対応 | ホストは合成PCM、実機は内蔵マイク |
+| 10固定シーン・4 variants | 対応 | 対応 | GPUシーンはM5GFX向けCPU表現 |
+| look gacha・オートサイクル | 対応 | 対応 | seedと設定をNVSへ保存 |
+| Stack-chan本体連動 | ― | 対応 | タッチ、RGB、サーボ |
+| Semantic Synth固定フォールバック | 対応 | 対応 | seed由来の決定的CPU表現 |
+| Semantic Synth 100 Generator / GLSL Patch | ブラウザ版のみ | 未対応 | WebGL2依存のため別バックエンドが必要 |
+| Timelineデータモデル・scheduler | 対応 | 対応 | 実機UIからのイベント編集は未対応 |
+| 基本外部操作 | ― | USB Serial対応 | state、seed、scene、tempo、reroll |
+| WebSocket CLI、録画、画像Patch | ブラウザ版のみ | 未対応 | USB SerialとのホストBridge・SD設計が必要 |
+
+実機が未準備のため、現段階のCoreS3確認範囲はクロスコンパイルまでです。サーボの
+可動範囲、マイク感度、タッチ方向、描画フレームレートは実機入手後に校正します。
 
 ブラウザだけで動く、音に反応するフルスクリーン・ビジュアルツールです。マイク / ライン入力 / ループバック（デスクトップ音声）を解析し、なめらかで音楽に反応するビジュアルを描画します。OBS のブラウザソースや、プロジェクター用のフルスクリーンブラウザに常駐させて使う前提で設計しています。
 

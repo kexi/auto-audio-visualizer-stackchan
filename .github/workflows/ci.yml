@@ -15,40 +15,24 @@ concurrency:
 
 jobs:
   build:
-    name: Type check & build
+    name: Nix flake checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: '.node-version'
-          cache: pnpm
+      - name: Install dependencies from devShell
+        run: nix develop --command just setup
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # ローカルとCIで同じflake・同じjust recipeを通す。
+      - name: Run all checks
+        run: nix develop --command just all
 
-      # oxfmt --check でフォーマット差分がないことを検証する
-      - name: Format check
-        run: pnpm format:check
-
-      # oxlint --type-aware で correctness + 型認識ルールを検証する
-      - name: Lint
-        run: pnpm lint
-
-      # build スクリプトは `tsc -b && vite build` なので
-      # 型チェックとビルドの両方をここで検証する
-      - name: Build
-        run: pnpm build
-
-      # vitest でユニットテストを実行する
-      - name: Test
-        run: pnpm test
+      - name: Cross-compile CoreS3 firmware
+        run: nix develop --command just firmware
 
   gpu-test:
     name: GPU parity test
@@ -57,22 +41,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: '.node-version'
-          cache: pnpm
+      - name: Install dependencies from devShell
+        run: nix develop --command just setup
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # CI には nix が無いので Playwright 同梱 Chromium を入れる
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      # CPU/GPU 乱数列の bit-exact 一致を検証する
+      # devShellのChromiumでCPU/GPU乱数列とGLSL描画の一致を検証する。
       - name: GPU parity test
-        run: pnpm test:gpu
+        run: nix develop --command pnpm test:gpu

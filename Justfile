@@ -16,6 +16,13 @@ compile: configure
 run: compile
     ./build/host/stackchan-simulator
 
+screenshot scene="semantic-synth" output="build/host/stackchan.bmp": compile
+    SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --scene {{scene}} --screenshot {{output}}
+
+snapshot-check: compile
+    SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --scene semantic-synth --screenshot build/host/snapshot-check.bmp
+    test -s build/host/snapshot-check.bmp
+
 test-host: compile
     ctest --test-dir build/host --output-on-failure
 
@@ -68,4 +75,4 @@ secrets:
 secrets-staged:
     gitleaks git --pre-commit --staged --redact
 
-all: format-check lint actions secrets test-host web-test web-compile
+all: format-check lint actions secrets test-host snapshot-check web-test web-compile
