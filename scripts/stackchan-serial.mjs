@@ -3,9 +3,11 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, createReadStream, openSync, writeSync } from 'node:fs';
 import { WebSocket } from 'ws';
+import { createChunkedImageTransport } from './stackchan-image-transfer.mjs';
 
 const DEFAULT_PORT = 7877;
 const RECONNECT_DELAY_MS = 250;
+const SERIAL_BAUD = 921600;
 
 function parseOptions(argv) {
   let device = '';
@@ -36,7 +38,7 @@ function configureSerial(device) {
   const deviceFlag = process.platform === 'darwin' ? '-f' : '-F';
   const configured = spawnSync(
     'stty',
-    [deviceFlag, device, '115200', 'raw', '-echo', '-ixon', '-ixoff'],
+    [deviceFlag, device, String(SERIAL_BAUD), 'raw', '-echo', '-ixon', '-ixoff'],
     { encoding: 'utf8' },
   );
   const didConfigure = configured.status === 0;
@@ -95,23 +97,28 @@ function main() {
   let stopping = false;
   let socket = null;
   const writeRequest = (line) => writeSync(serialDescriptor, line);
+  const imageTransport = createChunkedImageTransport({
+    writeLine: writeRequest,
+    sendResponse: (line) => {
+      const canForward = socket?.readyState === WebSocket.OPEN;
+      if (canForward) socket.send(line);
+    },
+  });
   connectSynth(
     options.port,
-    writeRequest,
+    (line) => imageTransport.handleRequest(line.trim()),
     () => stopping,
     (connected) => {
       socket = connected;
     },
   );
-  forwardLines(serialInput, (line) => {
-    const canForward = socket?.readyState === WebSocket.OPEN;
-    if (canForward) socket.send(line);
-  });
+  forwardLines(serialInput, (line) => imageTransport.handleResponse(line));
 
   const stop = () => {
     const alreadyStopping = stopping;
     if (alreadyStopping) return;
     stopping = true;
+    imageTransport.reset();
     socket?.close();
     serialInput.destroy();
     closeSync(serialDescriptor);

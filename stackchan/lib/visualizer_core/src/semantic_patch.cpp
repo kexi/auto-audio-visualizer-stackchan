@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -457,6 +458,183 @@ std::string serializePatch(const std::string& seed, const std::string& qualityTi
   return output.str();
 }
 
+std::optional<std::uint32_t> hexCodeUnit(const std::string& json, std::size_t begin) {
+  const bool hasFourDigits = begin + 4U <= json.size();
+  if (!hasFourDigits) {
+    return std::nullopt;
+  }
+  std::uint32_t value = 0U;
+  for (std::size_t index = 0; index < 4U; ++index) {
+    const char character = json[begin + index];
+    const bool isDigit = character >= '0' && character <= '9';
+    const bool isLower = character >= 'a' && character <= 'f';
+    const bool isUpper = character >= 'A' && character <= 'F';
+    if (!isDigit && !isLower && !isUpper) {
+      return std::nullopt;
+    }
+    const std::uint32_t digit = isDigit   ? static_cast<std::uint32_t>(character - '0')
+                                : isLower ? static_cast<std::uint32_t>(character - 'a' + 10)
+                                          : static_cast<std::uint32_t>(character - 'A' + 10);
+    value = value * 16U + digit;
+  }
+  return value;
+}
+
+void appendUtf8(std::string& output, std::uint32_t codePoint) {
+  const bool usesOneByte = codePoint <= 0x7FU;
+  const bool usesTwoBytes = codePoint <= 0x7FFU;
+  const bool usesThreeBytes = codePoint <= 0xFFFFU;
+  if (usesOneByte) {
+    output.push_back(static_cast<char>(codePoint));
+  } else if (usesTwoBytes) {
+    output.push_back(static_cast<char>(0xC0U | (codePoint >> 6U)));
+    output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
+  } else if (usesThreeBytes) {
+    output.push_back(static_cast<char>(0xE0U | (codePoint >> 12U)));
+    output.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
+    output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
+  } else {
+    output.push_back(static_cast<char>(0xF0U | (codePoint >> 18U)));
+    output.push_back(static_cast<char>(0x80U | ((codePoint >> 12U) & 0x3FU)));
+    output.push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3FU)));
+    output.push_back(static_cast<char>(0x80U | (codePoint & 0x3FU)));
+  }
+}
+
+std::optional<std::string> decodeSeedString(const std::string& json, std::size_t quote) {
+  std::string output;
+  for (std::size_t index = quote + 1U; index < json.size(); ++index) {
+    const char character = json[index];
+    const bool endsString = character == '"';
+    if (endsString) {
+      return output;
+    }
+    const bool startsEscape = character == '\\';
+    if (!startsEscape) {
+      output.push_back(character);
+      continue;
+    }
+    const bool hasEscape = index + 1U < json.size();
+    if (!hasEscape) {
+      return std::nullopt;
+    }
+    const char escaped = json[++index];
+    const bool usesUnicode = escaped == 'u';
+    if (usesUnicode) {
+      const auto first = hexCodeUnit(json, index + 1U);
+      const bool hasFirst = first.has_value();
+      if (!hasFirst) {
+        return std::nullopt;
+      }
+      index += 4U;
+      std::uint32_t codePoint = *first;
+      const bool isHighSurrogate = codePoint >= 0xD800U && codePoint <= 0xDBFFU;
+      if (isHighSurrogate) {
+        const bool hasLowEscape =
+            index + 6U < json.size() && json[index + 1U] == '\\' && json[index + 2U] == 'u';
+        if (!hasLowEscape) {
+          return std::nullopt;
+        }
+        const auto low = hexCodeUnit(json, index + 3U);
+        const bool isLowSurrogate = low.has_value() && *low >= 0xDC00U && *low <= 0xDFFFU;
+        if (!isLowSurrogate) {
+          return std::nullopt;
+        }
+        codePoint = 0x10000U + ((codePoint - 0xD800U) << 10U) + (*low - 0xDC00U);
+        index += 6U;
+      }
+      appendUtf8(output, codePoint);
+      continue;
+    }
+    const bool isKnownEscape = escaped == '"' || escaped == '\\' || escaped == '/' ||
+                               escaped == 'b' || escaped == 'f' || escaped == 'n' ||
+                               escaped == 'r' || escaped == 't';
+    if (!isKnownEscape) {
+      return std::nullopt;
+    }
+    const char decoded = escaped == 'b'   ? '\b'
+                         : escaped == 'f' ? '\f'
+                         : escaped == 'n' ? '\n'
+                         : escaped == 'r' ? '\r'
+                         : escaped == 't' ? '\t'
+                                          : escaped;
+    output.push_back(decoded);
+  }
+  return std::nullopt;
+}
+
+std::size_t matchingContainerEnd(const std::string& json, std::size_t begin, char open,
+                                 char close) {
+  int depth = 0;
+  bool inString = false;
+  bool escaped = false;
+  for (std::size_t index = begin; index < json.size(); ++index) {
+    const char character = json[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else {
+        const bool startsEscape = character == '\\';
+        const bool endsString = character == '"';
+        if (startsEscape) {
+          escaped = true;
+        } else if (endsString) {
+          inString = false;
+        }
+      }
+      continue;
+    }
+    const bool startsString = character == '"';
+    if (startsString) {
+      inString = true;
+      continue;
+    }
+    const bool opensContainer = character == open;
+    const bool closesContainer = character == close;
+    if (opensContainer) {
+      ++depth;
+    } else if (closesContainer) {
+      --depth;
+      const bool closedRoot = depth == 0;
+      if (closedRoot) {
+        return index;
+      }
+    }
+  }
+  return std::string::npos;
+}
+
+std::optional<std::string> stringProperty(const std::string& json, const std::string& key,
+                                          std::size_t begin, std::size_t end) {
+  const std::size_t keyPosition = json.find('"' + key + '"', begin);
+  const bool hasKey = keyPosition != std::string::npos && keyPosition < end;
+  if (!hasKey) {
+    return std::nullopt;
+  }
+  const std::size_t colon = json.find(':', keyPosition + key.size() + 2U);
+  const std::size_t quote =
+      colon == std::string::npos ? std::string::npos : json.find('"', colon + 1U);
+  const bool hasString = quote != std::string::npos && quote < end;
+  return hasString ? decodeSeedString(json, quote) : std::nullopt;
+}
+
+std::optional<long> integerProperty(const std::string& json, const std::string& key,
+                                    std::size_t begin, std::size_t end) {
+  const std::size_t keyPosition = json.find('"' + key + '"', begin);
+  const bool hasKey = keyPosition != std::string::npos && keyPosition < end;
+  if (!hasKey) {
+    return std::nullopt;
+  }
+  const std::size_t colon = json.find(':', keyPosition + key.size() + 2U);
+  const char* valueStart =
+      colon == std::string::npos || colon >= end ? nullptr : json.c_str() + colon + 1U;
+  char* valueEnd = nullptr;
+  const long value = valueStart == nullptr ? 0L : std::strtol(valueStart, &valueEnd, 10);
+  const bool hasInteger = valueStart != nullptr && valueEnd != valueStart &&
+                          static_cast<std::size_t>(valueEnd - json.c_str()) <= end;
+  return hasInteger ? std::optional<long>{value} : std::nullopt;
+}
+
 } // namespace
 
 std::string deriveSemanticPatchJson(const std::string& seed, const std::string& qualityTier) {
@@ -490,6 +668,56 @@ std::string deriveSemanticPatchJson(const std::string& seed, const std::string& 
   }
   const auto routes = buildRoutes(seed, operators);
   return serializePatch(seed, safeQuality, operators, routes);
+}
+
+std::optional<std::string> semanticPatchSeed(const std::string& patchJson) {
+  const std::size_t seedKey = patchJson.find("\"seed\"");
+  const bool hasSeedKey = seedKey != std::string::npos;
+  if (!hasSeedKey) {
+    return std::nullopt;
+  }
+  const std::size_t colon = patchJson.find(':', seedKey + 6U);
+  const std::size_t quote =
+      colon == std::string::npos ? std::string::npos : patchJson.find('"', colon + 1U);
+  const bool hasSeedString = quote != std::string::npos;
+  return hasSeedString ? decodeSeedString(patchJson, quote) : std::nullopt;
+}
+
+std::vector<std::string> semanticPatchTopology(const std::string& patchJson) {
+  std::vector<std::string> topology;
+  const std::size_t operatorsKey = patchJson.find("\"operators\"");
+  const std::size_t arrayStart = operatorsKey == std::string::npos
+                                     ? std::string::npos
+                                     : patchJson.find('[', operatorsKey + 11U);
+  const std::size_t arrayEnd = arrayStart == std::string::npos
+                                   ? std::string::npos
+                                   : matchingContainerEnd(patchJson, arrayStart, '[', ']');
+  const bool hasOperators = arrayStart != std::string::npos && arrayEnd != std::string::npos;
+  if (!hasOperators) {
+    return topology;
+  }
+  std::size_t position = arrayStart + 1U;
+  while (position < arrayEnd) {
+    const std::size_t objectStart = patchJson.find('{', position);
+    const bool hasObject = objectStart != std::string::npos && objectStart < arrayEnd;
+    if (!hasObject) {
+      break;
+    }
+    const std::size_t objectEnd = matchingContainerEnd(patchJson, objectStart, '{', '}');
+    const bool hasObjectEnd = objectEnd != std::string::npos && objectEnd <= arrayEnd;
+    if (!hasObjectEnd) {
+      break;
+    }
+    const auto id = stringProperty(patchJson, "id", objectStart, objectEnd);
+    const auto generatorId = stringProperty(patchJson, "generatorId", objectStart, objectEnd);
+    const auto version = integerProperty(patchJson, "generatorVersion", objectStart, objectEnd);
+    const bool hasSignature = id.has_value() && generatorId.has_value() && version.has_value();
+    if (hasSignature) {
+      topology.push_back(*id + '\0' + *generatorId + '\0' + std::to_string(*version));
+    }
+    position = objectEnd + 1U;
+  }
+  return topology;
 }
 
 } // namespace stackchan

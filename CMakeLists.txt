@@ -10,6 +10,7 @@ add_library(
   stackchan/lib/visualizer_core/src/audio.cpp
   stackchan/lib/visualizer_core/src/control.cpp
   stackchan/lib/visualizer_core/src/image_store.cpp
+  stackchan/lib/visualizer_core/src/quality.cpp
   stackchan/lib/visualizer_core/src/runtime.cpp
   stackchan/lib/visualizer_core/src/semantic_patch.cpp
   stackchan/lib/visualizer_core/src/scene_renderer.cpp

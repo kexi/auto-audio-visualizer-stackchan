@@ -315,6 +315,14 @@ describe('createModulationEngine', () => {
     expect(offsets.get('op0.scale')).toBeCloseTo(1.25, 10);
   });
 
+  it('maps the single-frame audio beat trigger to a numeric route source', () => {
+    const engine = createModulationEngine([
+      route({ source: 'audio:beat', target: 'op0.amount', amount: 0.8, smoothing: 0 }),
+    ]);
+    expect(engine.update(makeAudio({ beat: true }), 0, 0.016).offsets.get('op0.amount')).toBe(0.8);
+    expect(engine.update(makeAudio({ beat: false }), 0, 0.016).offsets.get('op0.amount')).toBe(0);
+  });
+
   it('throws on operator: sources (not silent zero)', () => {
     expect(() =>
       createModulationEngine([

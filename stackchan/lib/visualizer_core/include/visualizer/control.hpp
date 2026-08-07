@@ -6,6 +6,7 @@
 #include "visualizer/timeline.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,12 @@ namespace stackchan {
 enum class ControlMethod {
   GetState,
   GetCatalog,
+  SetSettings,
   SetImage,
+  BeginImageUpload,
+  AppendImageUpload,
+  CommitImageUpload,
+  CancelImageUpload,
   ProposePatch,
   ProposeSeed,
   SetScene,
@@ -31,6 +37,21 @@ enum class ControlMethod {
   Unknown,
 };
 
+struct SettingsPatch {
+  std::optional<SceneId> scene;
+  std::optional<float> gain;
+  std::optional<HueMode> hueMode;
+  std::optional<float> fixedHue;
+  std::optional<Background> background;
+  std::optional<bool> autoCycle;
+  std::optional<float> cycleSeconds;
+  std::optional<CycleMode> cycleMode;
+  std::optional<std::uint16_t> cycleBars;
+  std::optional<bool> autoGacha;
+  std::optional<std::uint16_t> gachaBars;
+  std::optional<std::string> seed;
+};
+
 struct ControlRequest {
   std::uint32_t id = 0;
   ControlMethod method = ControlMethod::Unknown;
@@ -40,6 +61,7 @@ struct ControlRequest {
   float number = 0.0F;
   TimelineOp timelineOperation{};
   SemanticIntent intent{};
+  SettingsPatch settingsPatch{};
   bool ok = false;
   std::string issue;
 };
@@ -50,6 +72,7 @@ struct ControlSnapshot {
   const PerformanceTimeline* timeline = nullptr;
   const SchedulerState* scheduler = nullptr;
   const std::string* patchJson = nullptr;
+  float qualityScale = 1.0F;
   bool transitionActive = false;
   bool recordingActive = false;
   double nowSec = 0.0;
@@ -58,6 +81,7 @@ struct ControlSnapshot {
 struct ControlResult {
   std::string response;
   bool settingsChanged = false;
+  bool imageChanged = false;
 };
 
 class ControlService {
@@ -71,6 +95,7 @@ public:
   [[nodiscard]] const PerformanceTimeline& timeline() const;
   [[nodiscard]] const SchedulerState& scheduler() const;
   [[nodiscard]] const ImageStore& images() const;
+  [[nodiscard]] ImageStore& images();
   [[nodiscard]] bool recordingActive() const;
 
 private:

@@ -23,6 +23,8 @@ const DEFAULT_PORT = 7877;
  * 止まって応答が返らなくなることがあるため、ctl を無限に待たせない保険。
  */
 const PENDING_TIMEOUT_MS = 15_000;
+// CoreS3のsetImageはUSB Serialへ32 KiBずつ流すため、通常操作より長く待つ。
+const IMAGE_PENDING_TIMEOUT_MS = 180_000;
 
 /** 依存を増やさないための最小限の手書きパース。見るのは --port だけ。 */
 function parsePort(argv) {
@@ -83,10 +85,11 @@ function handleCtlRequest(socket, msg) {
   }
 
   const serverId = nextServerId++;
+  const timeoutMs = msg.method === 'setImage' ? IMAGE_PENDING_TIMEOUT_MS : PENDING_TIMEOUT_MS;
   const timer = setTimeout(() => {
     pending.delete(serverId);
     send(socket, { id: msg.id, error: 'timeout waiting for synth' });
-  }, PENDING_TIMEOUT_MS);
+  }, timeoutMs);
   pending.set(serverId, { socket, ctlId: msg.id, timer });
   // params が undefined なら JSON.stringify がキーごと落とす。仕様どおり。
   send(synth, { id: serverId, method: msg.method, params: msg.params });

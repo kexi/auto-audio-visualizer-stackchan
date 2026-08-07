@@ -72,6 +72,8 @@ function resolveSourceValue(source: string, audio: AudioFrame, t: number): numbe
       return audio.treble;
     case 'audio:level':
       return audio.level;
+    case 'audio:beat':
+      return audio.beat ? 1 : 0;
     case 'audio:beatIntensity':
       return audio.beatIntensity;
     case 'audio:gridPulse':

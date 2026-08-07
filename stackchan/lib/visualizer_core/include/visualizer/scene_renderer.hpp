@@ -2,10 +2,13 @@
 
 #include "visualizer/audio.hpp"
 #include "visualizer/image_store.hpp"
+#include "visualizer/runtime.hpp"
 #include "visualizer/settings.hpp"
 #include "visualizer/variation.hpp"
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -37,9 +40,20 @@ class SceneRenderer {
 public:
   void draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame& audio,
             const Variation& variation, float elapsedSeconds, float deltaSeconds, float baseHue,
-            const std::string& patchJson = {}, const ImageStore* images = nullptr);
+            const std::string& patchJson = {}, const ImageStore* images = nullptr,
+            Background background = Background::Black, const std::string& previousPatchJson = {},
+            PatchTransitionProgress transition = {});
 
 private:
+  struct SemanticRouteState {
+    std::string source;
+    std::string target;
+    float amount = 0.0F;
+    float smoothing = 0.0F;
+    float smoothed = 0.0F;
+    bool bipolar = false;
+  };
+
   void drawBars(Canvas& canvas, const AnalyzedAudioFrame& audio, const Variation& variation,
                 float hue);
   void drawWaveform(Canvas& canvas, const AnalyzedAudioFrame& audio, const Variation& variation,
@@ -61,8 +75,10 @@ private:
   void drawAurora(Canvas& canvas, const AnalyzedAudioFrame& audio, const Variation& variation,
                   float elapsedSeconds, float hue);
   void drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& audio,
-                         const Variation& variation, float elapsedSeconds, float hue,
-                         const std::string& patchJson, const ImageStore* images);
+                         const Variation& variation, float elapsedSeconds, float deltaSeconds,
+                         float hue, const std::string& patchJson, const ImageStore* images,
+                         const SceneRenderer* previousPatch = nullptr,
+                         PatchTransitionProgress transition = {});
 
   void compileSemanticPatch(const std::string& patchJson);
 
@@ -72,8 +88,35 @@ private:
   std::vector<std::uint32_t> modifierHashes_;
   std::vector<std::uint32_t> materialHashes_;
   std::uint32_t semanticGraphHash_ = 0;
-  std::string semanticImageHash_;
+  std::uint32_t semanticDiscreteParameterHash_ = 0;
+  float semanticParameterSignal_ = 0.0F;
+  int semanticPaletteMode_ = 0;
+  float semanticPaletteHue_ = 0.0F;
+  float semanticPaletteSaturation_ = 75.0F;
+  float semanticPaletteLightness_ = 50.0F;
+  float semanticCompositionSymmetry_ = 4.0F;
+  float semanticCompositionScale_ = 1.0F;
+  float semanticCompositionSpeed_ = 1.0F;
+  std::vector<std::string> semanticImageHashes_;
+  std::vector<SemanticRouteState> semanticRoutes_;
   bool usesImageSource_ = false;
+  bool hasRenderedSemanticState_ = false;
+  float renderedSemanticParameterSignal_ = 0.0F;
+  std::uint32_t renderedSemanticDiscreteParameterHash_ = 0;
+  int renderedSemanticPaletteMode_ = 0;
+  float renderedSemanticPaletteHue_ = 0.0F;
+  float renderedSemanticPaletteSaturation_ = 75.0F;
+  float renderedSemanticPaletteLightness_ = 50.0F;
+  float renderedSemanticCompositionSymmetry_ = 4.0F;
+  float renderedSemanticCompositionScale_ = 1.0F;
+  float renderedSemanticCompositionSpeed_ = 1.0F;
+  std::array<float, 4> renderedSemanticRouteOffsets_{};
+  bool hasFrozenSemanticRouteOffsets_ = false;
+  std::array<float, 4> frozenSemanticRouteOffsets_{};
+  std::shared_ptr<SceneRenderer> topologyOutgoingRenderer_;
+  std::shared_ptr<SceneRenderer> topologyIncomingRenderer_;
+  std::string topologyOutgoingPatch_;
+  std::string topologyIncomingPatch_;
 };
 
 } // namespace stackchan

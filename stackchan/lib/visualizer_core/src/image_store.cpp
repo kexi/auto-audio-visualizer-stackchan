@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <initializer_list>
 #include <iomanip>
 #include <optional>
 #include <sstream>
@@ -11,6 +12,8 @@
 
 namespace stackchan {
 namespace {
+
+constexpr std::size_t kMaximumImageBytes = 5U * 1024U * 1024U;
 
 constexpr std::array<std::uint32_t, 64> kSha256Constants = {
     0x428A2F98U, 0x71374491U, 0xB5C0FBCFU, 0xE9B5DBA5U, 0x3956C25BU, 0x59F111F1U, 0x923F82A4U,
@@ -29,69 +32,78 @@ std::uint32_t rotateRight(std::uint32_t value, std::uint32_t bits) {
   return (value >> bits) | (value << (32U - bits));
 }
 
-std::string sha256(const std::vector<std::uint8_t>& input) {
-  std::vector<std::uint8_t> message = input;
-  const std::uint64_t bitLength = static_cast<std::uint64_t>(message.size()) * 8U;
-  message.push_back(0x80U);
-  while (message.size() % 64U != 56U) {
-    message.push_back(0U);
+void compressSha256(std::array<std::uint32_t, 8>& hash, const std::uint8_t* block) {
+  std::array<std::uint32_t, 64> words{};
+  for (std::size_t index = 0; index < 16; ++index) {
+    const std::size_t byte = index * 4U;
+    words[index] = (static_cast<std::uint32_t>(block[byte]) << 24U) |
+                   (static_cast<std::uint32_t>(block[byte + 1]) << 16U) |
+                   (static_cast<std::uint32_t>(block[byte + 2]) << 8U) |
+                   static_cast<std::uint32_t>(block[byte + 3]);
   }
-  for (int shift = 56; shift >= 0; shift -= 8) {
-    message.push_back(static_cast<std::uint8_t>((bitLength >> shift) & 0xFFU));
+  for (std::size_t index = 16; index < words.size(); ++index) {
+    const std::uint32_t first = rotateRight(words[index - 15], 7U) ^
+                                rotateRight(words[index - 15], 18U) ^ (words[index - 15] >> 3U);
+    const std::uint32_t second = rotateRight(words[index - 2], 17U) ^
+                                 rotateRight(words[index - 2], 19U) ^ (words[index - 2] >> 10U);
+    words[index] = words[index - 16] + first + words[index - 7] + second;
   }
 
+  std::uint32_t a = hash[0];
+  std::uint32_t b = hash[1];
+  std::uint32_t c = hash[2];
+  std::uint32_t d = hash[3];
+  std::uint32_t e = hash[4];
+  std::uint32_t f = hash[5];
+  std::uint32_t g = hash[6];
+  std::uint32_t h = hash[7];
+  for (std::size_t index = 0; index < words.size(); ++index) {
+    const std::uint32_t sigmaOne = rotateRight(e, 6U) ^ rotateRight(e, 11U) ^ rotateRight(e, 25U);
+    const std::uint32_t choice = (e & f) ^ (~e & g);
+    const std::uint32_t first = h + sigmaOne + choice + kSha256Constants[index] + words[index];
+    const std::uint32_t sigmaZero = rotateRight(a, 2U) ^ rotateRight(a, 13U) ^ rotateRight(a, 22U);
+    const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+    const std::uint32_t second = sigmaZero + majority;
+    h = g;
+    g = f;
+    f = e;
+    e = d + first;
+    d = c;
+    c = b;
+    b = a;
+    a = first + second;
+  }
+  hash[0] += a;
+  hash[1] += b;
+  hash[2] += c;
+  hash[3] += d;
+  hash[4] += e;
+  hash[5] += f;
+  hash[6] += g;
+  hash[7] += h;
+}
+
+std::string sha256(const std::vector<std::uint8_t>& input) {
   std::array<std::uint32_t, 8> hash = {0x6A09E667U, 0xBB67AE85U, 0x3C6EF372U, 0xA54FF53AU,
                                        0x510E527FU, 0x9B05688CU, 0x1F83D9ABU, 0x5BE0CD19U};
-  for (std::size_t offset = 0; offset < message.size(); offset += 64U) {
-    std::array<std::uint32_t, 64> words{};
-    for (std::size_t index = 0; index < 16; ++index) {
-      const std::size_t byte = offset + index * 4U;
-      words[index] = (static_cast<std::uint32_t>(message[byte]) << 24U) |
-                     (static_cast<std::uint32_t>(message[byte + 1]) << 16U) |
-                     (static_cast<std::uint32_t>(message[byte + 2]) << 8U) |
-                     static_cast<std::uint32_t>(message[byte + 3]);
-    }
-    for (std::size_t index = 16; index < words.size(); ++index) {
-      const std::uint32_t first = rotateRight(words[index - 15], 7U) ^
-                                  rotateRight(words[index - 15], 18U) ^ (words[index - 15] >> 3U);
-      const std::uint32_t second = rotateRight(words[index - 2], 17U) ^
-                                   rotateRight(words[index - 2], 19U) ^ (words[index - 2] >> 10U);
-      words[index] = words[index - 16] + first + words[index - 7] + second;
-    }
+  const std::size_t fullBlockBytes = input.size() / 64U * 64U;
+  for (std::size_t offset = 0; offset < fullBlockBytes; offset += 64U) {
+    compressSha256(hash, input.data() + offset);
+  }
 
-    std::uint32_t a = hash[0];
-    std::uint32_t b = hash[1];
-    std::uint32_t c = hash[2];
-    std::uint32_t d = hash[3];
-    std::uint32_t e = hash[4];
-    std::uint32_t f = hash[5];
-    std::uint32_t g = hash[6];
-    std::uint32_t h = hash[7];
-    for (std::size_t index = 0; index < words.size(); ++index) {
-      const std::uint32_t sigmaOne = rotateRight(e, 6U) ^ rotateRight(e, 11U) ^ rotateRight(e, 25U);
-      const std::uint32_t choice = (e & f) ^ (~e & g);
-      const std::uint32_t first = h + sigmaOne + choice + kSha256Constants[index] + words[index];
-      const std::uint32_t sigmaZero =
-          rotateRight(a, 2U) ^ rotateRight(a, 13U) ^ rotateRight(a, 22U);
-      const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
-      const std::uint32_t second = sigmaZero + majority;
-      h = g;
-      g = f;
-      f = e;
-      e = d + first;
-      d = c;
-      c = b;
-      b = a;
-      a = first + second;
-    }
-    hash[0] += a;
-    hash[1] += b;
-    hash[2] += c;
-    hash[3] += d;
-    hash[4] += e;
-    hash[5] += f;
-    hash[6] += g;
-    hash[7] += h;
+  std::array<std::uint8_t, 128> finalBlocks{};
+  const std::size_t tailBytes = input.size() - fullBlockBytes;
+  std::copy_n(input.data() + fullBlockBytes, tailBytes, finalBlocks.begin());
+  finalBlocks[tailBytes] = 0x80U;
+  const bool needsSecondBlock = tailBytes >= 56U;
+  const std::size_t finalBlockBytes = needsSecondBlock ? 128U : 64U;
+  const std::uint64_t bitLength = static_cast<std::uint64_t>(input.size()) * 8U;
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    const std::size_t byte = finalBlockBytes - 8U + static_cast<std::size_t>((56 - shift) / 8);
+    finalBlocks[byte] = static_cast<std::uint8_t>((bitLength >> shift) & 0xFFU);
+  }
+  for (std::size_t offset = 0; offset < finalBlockBytes; offset += 64U) {
+    compressSha256(hash, finalBlocks.data() + offset);
   }
 
   std::ostringstream output;
@@ -188,31 +200,156 @@ std::string trimmed(const std::string& value) {
   return hasText ? std::string(first, last) : std::string{};
 }
 
+bool startsWith(const std::vector<std::uint8_t>& bytes,
+                const std::initializer_list<std::uint8_t> signature) {
+  const bool hasSignature = bytes.size() >= signature.size();
+  if (!hasSignature) {
+    return false;
+  }
+  return std::equal(signature.begin(), signature.end(), bytes.begin());
+}
+
+std::optional<std::string> detectedMime(const std::vector<std::uint8_t>& bytes) {
+  const bool isPng = startsWith(bytes, {0x89U, 0x50U, 0x4EU, 0x47U, 0x0DU, 0x0AU, 0x1AU, 0x0AU});
+  if (isPng) {
+    return "image/png";
+  }
+  const bool isJpeg = startsWith(bytes, {0xFFU, 0xD8U, 0xFFU});
+  if (isJpeg) {
+    return "image/jpeg";
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
-ImageStoreResult ImageStore::putBase64(const std::string& name, const std::string& bytesBase64,
-                                       const std::string& mime) {
+ImageStoreResult ImageStore::beginBase64(const std::string& name, const std::string& mime,
+                                         std::size_t expectedBytes) {
+  const bool alreadyUploading = uploadActive_;
+  if (alreadyUploading) {
+    return {false, "an image upload is already active", nullptr};
+  }
   const std::string safeName = trimmed(name);
   const bool hasName = !safeName.empty();
   if (!hasName) {
     return {false, "image name must not be empty", nullptr};
   }
+  const bool hasValidSize = expectedBytes > 0 && expectedBytes <= kMaximumImageBytes;
+  if (!hasValidSize) {
+    return {false, "image size must be in 1..5242880 bytes", nullptr};
+  }
+  pending_ = {safeName, mime, expectedBytes, {}};
+  pending_.bytes.reserve(expectedBytes);
+  uploadActive_ = true;
+  return {true, {}, nullptr};
+}
+
+ImageStoreResult ImageStore::appendBase64(const std::string& bytesBase64) {
+  const bool hasUpload = uploadActive_;
+  if (!hasUpload) {
+    return {false, "no image upload is active", nullptr};
+  }
   auto decoded = decodeBase64(bytesBase64);
   const bool hasPayload = decoded.has_value() && !decoded->empty();
   if (!hasPayload) {
+    cancelBase64();
     return {false, "invalid or empty base64 payload", nullptr};
   }
-  const std::string hash = sha256(*decoded);
+  const bool exceedsExpectedSize = decoded->size() > pending_.expectedBytes - pending_.bytes.size();
+  if (exceedsExpectedSize) {
+    cancelBase64();
+    return {false, "image payload exceeds its declared size", nullptr};
+  }
+  pending_.bytes.insert(pending_.bytes.end(), decoded->begin(), decoded->end());
+  return {true, {}, nullptr};
+}
+
+ImageStoreResult ImageStore::commitBase64() {
+  const bool hasUpload = uploadActive_;
+  if (!hasUpload) {
+    return {false, "no image upload is active", nullptr};
+  }
+  const bool hasExpectedSize = pending_.bytes.size() == pending_.expectedBytes;
+  if (!hasExpectedSize) {
+    cancelBase64();
+    return {false, "image payload does not match its declared size", nullptr};
+  }
+  std::string name = std::move(pending_.name);
+  std::string mime = std::move(pending_.mime);
+  std::vector<std::uint8_t> bytes = std::move(pending_.bytes);
+  pending_ = {};
+  uploadActive_ = false;
+  return putBytes(name, std::move(bytes), mime);
+}
+
+ImageStoreResult ImageStore::putBytes(const std::string& name, std::vector<std::uint8_t> bytes,
+                                      const std::string& mime) {
+  const std::string safeName = trimmed(name);
+  const bool hasName = !safeName.empty();
+  if (!hasName) {
+    return {false, "image name must not be empty", nullptr};
+  }
+  const bool hasValidSize = !bytes.empty() && bytes.size() <= kMaximumImageBytes;
+  if (!hasValidSize) {
+    return {false, "image size must be in 1..5242880 bytes", nullptr};
+  }
+  const auto actualMime = detectedMime(bytes);
+  const bool hasSupportedImage = actualMime.has_value();
+  if (!hasSupportedImage) {
+    return {false, "CoreS3 image must be PNG or JPEG", nullptr};
+  }
+  const bool hasMime = !mime.empty();
+  const bool isJpegAlias = mime == "image/jpg" && *actualMime == "image/jpeg";
+  const bool mimeMatches = !hasMime || mime == *actualMime || isJpegAlias;
+  if (!mimeMatches) {
+    return {false, "image MIME does not match its bytes", nullptr};
+  }
+  const std::string hash = sha256(bytes);
   const auto existing = std::find_if(assets_.begin(), assets_.end(),
                                      [&hash](const ImageAsset& item) { return item.hash == hash; });
   const bool alreadyStored = existing != assets_.end();
   if (alreadyStored) {
     existing->name = safeName;
-    existing->mime = mime;
+    existing->mime = *actualMime;
+    const bool hasBytes = !bytes.empty();
+    if (hasBytes) {
+      existing->bytes = std::move(bytes);
+    }
+    lastTouchedHash_ = hash;
     return {true, {}, &*existing};
   }
-  assets_.push_back({safeName, mime, hash, std::move(*decoded)});
+  assets_.push_back({safeName, *actualMime, hash, std::move(bytes), {}});
+  lastTouchedHash_ = hash;
   return {true, {}, &assets_.back()};
+}
+
+void ImageStore::cancelBase64() {
+  pending_ = {};
+  uploadActive_ = false;
+}
+
+ImageStoreResult ImageStore::putBase64(const std::string& name, const std::string& bytesBase64,
+                                       const std::string& mime) {
+  const std::size_t padding = bytesBase64.size() >= 2 && bytesBase64.back() == '='
+                                  ? (bytesBase64[bytesBase64.size() - 2] == '=' ? 2U : 1U)
+                                  : 0U;
+  const bool hasEncodedBlocks = !bytesBase64.empty() && bytesBase64.size() % 4U == 0U;
+  if (!hasEncodedBlocks) {
+    return {false, "invalid or empty base64 payload", nullptr};
+  }
+  const std::size_t expectedBytes = bytesBase64.size() / 4U * 3U - padding;
+  const auto began = beginBase64(name, mime, expectedBytes);
+  const bool didBegin = began.ok;
+  if (!didBegin) {
+    return began;
+  }
+  const auto appended = appendBase64(bytesBase64);
+  const bool didAppend = appended.ok;
+  if (!didAppend) {
+    cancelBase64();
+    return appended;
+  }
+  return commitBase64();
 }
 
 const ImageAsset* ImageStore::get(const std::string& hash) const {
@@ -221,6 +358,25 @@ const ImageAsset* ImageStore::get(const std::string& hash) const {
   return match == assets_.end() ? nullptr : &*match;
 }
 
+const ImageAsset* ImageStore::latest() const {
+  return lastTouchedHash_.empty() ? nullptr : get(lastTouchedHash_);
+}
+
+bool ImageStore::markPersisted(const std::string& hash, const std::string& storagePath) {
+  const auto match = std::find_if(assets_.begin(), assets_.end(),
+                                  [&hash](const ImageAsset& item) { return item.hash == hash; });
+  const bool hasAsset = match != assets_.end();
+  if (!hasAsset) {
+    return false;
+  }
+  match->storagePath = storagePath;
+  match->bytes.clear();
+  match->bytes.shrink_to_fit();
+  return true;
+}
+
 std::size_t ImageStore::size() const { return assets_.size(); }
+
+bool ImageStore::uploadActive() const { return uploadActive_; }
 
 } // namespace stackchan

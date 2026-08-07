@@ -1,5 +1,7 @@
 #include "visualizer/audio.hpp"
 #include "visualizer/control.hpp"
+#include "visualizer/generated_catalog.hpp"
+#include "visualizer/quality.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/scene_renderer.hpp"
 #include "visualizer/semantic_patch.hpp"
@@ -8,9 +10,13 @@
 #include "visualizer/variation.hpp"
 #include "visualizer/visualizer.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <optional>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
@@ -46,11 +52,14 @@ std::string quoteJsonString(const std::string& value) {
 
 class CountingCanvas final : public stackchan::Canvas {
 public:
-  [[nodiscard]] int width() const override { return 320; }
-  [[nodiscard]] int height() const override { return 240; }
+  explicit CountingCanvas(int width = 320, int height = 240) : width_(width), height_(height) {}
+
+  [[nodiscard]] int width() const override { return width_; }
+  [[nodiscard]] int height() const override { return height_; }
   void clear(stackchan::Color color) override {
     ++operations;
-    mix(color.red, color.green, color.blue);
+    lastClearAlpha = color.alpha;
+    mix(color.red, color.green, color.blue + color.alpha);
   }
   void line(int x1, int y1, int x2, int y2, stackchan::Color color, int) override {
     ++operations;
@@ -77,9 +86,13 @@ public:
 
   int operations = 0;
   int imageOperations = 0;
+  std::uint8_t lastClearAlpha = 255;
   std::uint32_t fingerprint = 2166136261U;
 
 private:
+  int width_ = 320;
+  int height_ = 240;
+
   void mix(int first, int second, int third) {
     fingerprint ^= static_cast<std::uint32_t>(first);
     fingerprint *= 16777619U;
@@ -146,12 +159,53 @@ int main() {
   assert(stackchan::shiftedScene(stackchan::SceneId::Bars, -1) ==
          stackchan::SceneId::SemanticSynth);
 
+  // 高負荷が持続したときだけ品質を一段下げ、resetで最高品質へ戻ることを保証する。
+  stackchan::QualityController quality;
+  assert(isNear(quality.update(30.0F, 0.0), 1.0F, 0.000001F));
+  assert(isNear(quality.update(30.0F, 1999.0), 1.0F, 0.000001F));
+  assert(isNear(quality.update(30.0F, 2000.0), 0.75F, 0.000001F));
+  for (int nowMs = 2001; nowMs < 6000; ++nowMs) {
+    quality.update(1.0F, static_cast<double>(nowMs));
+  }
+  assert(isNear(quality.scale(), 0.75F, 0.000001F));
+  assert(isNear(quality.update(1.0F, 6000.0), 1.0F, 0.000001F));
+  quality.reset();
+  assert(isNear(quality.scale(), 1.0F, 0.000001F));
+
   // seedからのSemantic Patch導出が決定的で、共通のPatch検証ゲートを通ることを保証する。
   const std::string derivedPatch = stackchan::deriveSemanticPatchJson("portable-neon-042");
   assert(derivedPatch == stackchan::deriveSemanticPatchJson("portable-neon-042"));
   const auto derivedPatchRequest = stackchan::parseControlRequest(
       R"({"id":16,"method":"proposePatch","params":{"patch":)" + derivedPatch + "}}");
   assert(derivedPatchRequest.ok);
+  assert(stackchan::semanticPatchSeed(R"({"seed":"日本語\uD83C\uDF9B\uFE0F"})") ==
+         std::optional<std::string>{"日本語🎛️"});
+  const auto escapedTopology = stackchan::semanticPatchTopology(
+      R"({"operators":[{"id":"src\"x","generatorId":"grid","generatorVersion":1,"parameters":{"label":"}"}}]})");
+  assert(escapedTopology.size() == 1);
+  assert(escapedTopology[0].rfind("src\"x", 0) == 0);
+
+  // Web版が公開する全Audio modulation sourceをCoreS3のPatch検証も受理することを保証する。
+  constexpr std::array<const char*, 3> extendedAudioSources = {"audio:beatIntensity",
+                                                               "audio:gridPulse", "audio:barPulse"};
+  for (const char* source : extendedAudioSources) {
+    std::string sourcePatch = minimalPatchJson("audio-source-validation");
+    sourcePatch.replace(sourcePatch.find("\"routes\":[]"), 11,
+                        std::string{"\"routes\":[{\"source\":\""} + source +
+                            "\",\"target\":\"src0.cells\",\"amount\":1,\"polarity\":\"unipolar\","
+                            "\"smoothing\":0}]");
+    const auto sourceRequest = stackchan::parseControlRequest(
+        R"({"id":17,"method":"proposePatch","params":{"patch":)" + sourcePatch + "}}");
+    assert(sourceRequest.ok);
+  }
+  std::string unsupportedOperatorSource = minimalPatchJson("operator-source-validation");
+  unsupportedOperatorSource.replace(
+      unsupportedOperatorSource.find("\"routes\":[]"), 11,
+      R"("routes":[{"source":"operator:mod0","target":"src0.cells","amount":1,"polarity":"unipolar","smoothing":0}])");
+  const auto unsupportedOperatorRequest = stackchan::parseControlRequest(
+      R"({"id":18,"method":"proposePatch","params":{"patch":)" + unsupportedOperatorSource + "}}");
+  assert(!unsupportedOperatorRequest.ok);
+  assert(unsupportedOperatorRequest.issue.find("not supported yet") != std::string::npos);
 
   // 500ms間隔のタップが120 BPMの手動グリッドを生成することを保証する。
   stackchan::TempoTracker tempo;
@@ -165,6 +219,15 @@ int main() {
   assert(isNear(tempo.state().bpm, 240.0F, 0.01F));
   tempo.setAuto();
   assert(tempo.state().mode == stackchan::TempoMode::Auto);
+
+  // 120 BPMの規則的なonset列から自動テンポがロックすることを保証する。
+  stackchan::TempoTracker automaticTempo;
+  for (std::uint64_t nowMs = 0; nowMs <= 20000; nowMs += 10) {
+    const bool isKick = nowMs % 500U == 0U;
+    automaticTempo.update(isKick ? 1.0F : 0.0F, 0.5F, nowMs);
+  }
+  assert(automaticTempo.state().locked);
+  assert(isNear(automaticTempo.state().bpm, 120.0F, 1.0F));
 
   // PCM解析がRMS・ピーク・波形・帯域を有限の正規化値として返すことを保証する。
   std::array<std::int16_t, 256> samples{};
@@ -186,6 +249,15 @@ int main() {
   for (const float bin : singleAnalyzed.spectrum) {
     assert(std::isfinite(bin));
   }
+
+  // PCMが途切れても手動テンポのフリーホイールが進み続けることを保証する。
+  stackchan::AudioAnalyzer freewheelAnalyzer;
+  freewheelAnalyzer.tapTempo(1000);
+  freewheelAnalyzer.tapTempo(1500);
+  const auto silentFreewheel = freewheelAnalyzer.process(nullptr, 0, 16000, 1.5F, 2000);
+  assert(!silentFreewheel.running);
+  assert(silentFreewheel.tempo.mode == stackchan::TempoMode::Manual);
+  assert(isNear(silentFreewheel.tempo.bpm, 120.0F, 0.01F));
 
   // 秒指定のオートサイクルと小節指定の自動ガチャが独立に発火することを保証する。
   stackchan::Settings runtimeSettings{};
@@ -226,14 +298,66 @@ int main() {
   const bool didApplyPatch = transitionRuntime.applyIntent(patchIntent, linearTransition);
   assert(didApplyPatch);
   assert(transitionRuntime.settings().scene == stackchan::SceneId::SemanticSynth);
-  assert(transitionRuntime.settings().seed.rfind("patch-", 0) == 0);
+  assert(transitionRuntime.settings().seed == "semantic-patch");
   assert(transitionRuntime.patchJson() == patchIntent.patchJson);
   transitionRuntime.update({}, 1.0F, 0);
   assert(transitionRuntime.variationTransitionActive());
   transitionRuntime.update({}, 1.0F, 0);
   assert(!transitionRuntime.variationTransitionActive());
 
-  // 同じPatch seedでもoperator JSONが異なればCPU表現が変わることを保証する。
+  // Patch更新時に旧Patchを保持し、指定easingの進捗が遷移時間へ追従することを保証する。
+  const std::string previousPatch = transitionRuntime.patchJson();
+  stackchan::SemanticIntent nextPatchIntent{};
+  nextPatchIntent.patchJson = minimalPatchJson("transition-next");
+  assert(transitionRuntime.applyIntent(nextPatchIntent, linearTransition));
+  assert(transitionRuntime.previousPatchJson() == previousPatch);
+  assert(isNear(transitionRuntime.transitionProgress(), 0.0F, 0.000001F));
+  transitionRuntime.update({}, 1.0F, 0);
+  assert(isNear(transitionRuntime.transitionProgress(), 0.5F, 0.000001F));
+  transitionRuntime.update({}, 1.0F, 0);
+  assert(isNear(transitionRuntime.transitionProgress(), 1.0F, 0.000001F));
+
+  // 同一TopologyのPatch変更ではtopologyMsを無視し、属性系の最長時間で完了することを保証する。
+  stackchan::TransitionSpec sameTopologyTransition{};
+  sameTopologyTransition.paletteMs = 300.0;
+  sameTopologyTransition.parameterMs = 500.0;
+  sameTopologyTransition.modulationMs = 400.0;
+  sameTopologyTransition.topologyMs = 10000.0;
+  sameTopologyTransition.easing = stackchan::TransitionEasing::Linear;
+  stackchan::SemanticIntent sameTopologyIntent{};
+  sameTopologyIntent.patchJson = minimalPatchJson("transition-same-topology");
+  assert(transitionRuntime.applyIntent(sameTopologyIntent, sameTopologyTransition));
+  assert(!transitionRuntime.patchTransitionProgress().usesDecks);
+  transitionRuntime.update({}, 0.15F, 0);
+  const auto attributeProgress = transitionRuntime.patchTransitionProgress();
+  assert(isNear(attributeProgress.palette, 0.5F, 0.000001F));
+  assert(isNear(attributeProgress.parameter, 0.3F, 0.000001F));
+  assert(isNear(attributeProgress.modulation, 0.375F, 0.000001F));
+  assert(isNear(attributeProgress.topology, 0.015F, 0.000001F));
+  transitionRuntime.update({}, 0.35F, 0);
+  assert(!transitionRuntime.variationTransitionActive());
+
+  // seedが同一でもPatch属性が変われば遷移し、operator id変更はTopology変更になることを保証する。
+  stackchan::RuntimeController sameSeedRuntime;
+  stackchan::SemanticIntent sameSeedBase{};
+  sameSeedBase.seed = "shared-transition-seed";
+  sameSeedBase.patchJson = minimalPatchJson("shared-transition-seed");
+  assert(sameSeedRuntime.applyIntent(sameSeedBase, linearTransition));
+  sameSeedRuntime.update({}, 2.0F, 0);
+  stackchan::SemanticIntent sameSeedChanged = sameSeedBase;
+  sameSeedChanged.patchJson.replace(sameSeedChanged.patchJson.find("\"cells\":8"), 9,
+                                    "\"cells\":12");
+  assert(sameSeedRuntime.applyIntent(sameSeedChanged, linearTransition));
+  assert(sameSeedRuntime.variationTransitionActive());
+  assert(!sameSeedRuntime.patchTransitionProgress().usesDecks);
+  sameSeedRuntime.update({}, 2.0F, 0);
+  stackchan::SemanticIntent changedOperatorId = sameSeedChanged;
+  changedOperatorId.patchJson.replace(changedOperatorId.patchJson.find("\"id\":\"src0\""), 11,
+                                      "\"id\":\"src1\"");
+  assert(sameSeedRuntime.applyIntent(changedOperatorId, linearTransition));
+  assert(sameSeedRuntime.patchTransitionProgress().usesDecks);
+
+  // Patch intentではJSON全体のhashではなくPatchが宣言したseedを採用することを保証する。
   stackchan::RuntimeController alternatePatchRuntime;
   stackchan::SemanticIntent alternatePatchIntent{};
   alternatePatchIntent.seed = "semantic-patch";
@@ -241,7 +365,18 @@ int main() {
       R"({"schemaVersion":1,"seed":"semantic-patch","operators":[{"id":"different"}]})";
   alternatePatchRuntime.applyIntent(alternatePatchIntent, linearTransition);
   alternatePatchRuntime.update({}, 2.0F, 0);
-  assert(alternatePatchRuntime.variation().seed != transitionRuntime.variation().seed);
+  assert(alternatePatchRuntime.settings().seed == "semantic-patch");
+  assert(alternatePatchRuntime.variation().seed == "semantic-patch");
+
+  // Semantic以外で変更したseedが、次にSemanticへ入るときのPatchへ反映されることを保証する。
+  stackchan::RuntimeController deferredSeedRuntime;
+  stackchan::Settings deferredSettings = deferredSeedRuntime.settings();
+  deferredSettings.seed = "deferred-semantic-seed";
+  deferredSeedRuntime.setSettings(deferredSettings);
+  deferredSeedRuntime.shiftScene(-1);
+  assert(deferredSeedRuntime.settings().scene == stackchan::SceneId::SemanticSynth);
+  assert(stackchan::semanticPatchSeed(deferredSeedRuntime.patchJson()) ==
+         std::optional<std::string>{"deferred-semantic-seed"});
 
   // 登録された11シーンすべてがCoreS3互換Canvasへ描画命令を発行することを保証する。
   stackchan::SceneRenderer sceneRenderer;
@@ -251,6 +386,35 @@ int main() {
     sceneRenderer.draw(canvas, scene, analyzed, variation, 3.0F, 0.016F, 200.0F);
     assert(canvas.operations > 1);
   }
+
+  // 10固定シーンそれぞれで4種類のvariantが異なる描画結果を持つことを保証する。
+  for (std::size_t index = 0; index + 1U < stackchan::sceneCount(); ++index) {
+    const auto scene = stackchan::shiftedScene(stackchan::SceneId::Bars, static_cast<int>(index));
+    std::unordered_set<std::uint32_t> variantFingerprints;
+    for (int variant = 0; variant < 4; ++variant) {
+      stackchan::Variation variantVariation = variation;
+      variantVariation.variant = variant;
+      CountingCanvas variantCanvas;
+      sceneRenderer.draw(variantCanvas, scene, analyzed, variantVariation, 3.0F, 0.016F, 200.0F);
+      variantFingerprints.insert(variantCanvas.fingerprint);
+    }
+    assert(variantFingerprints.size() == 4U);
+  }
+
+  // 品質縮退が固定シーンの描画命令数を実際に削減することを保証する。
+  CountingCanvas fullQualityCanvas;
+  CountingCanvas reducedQualityCanvas(160, 120);
+  sceneRenderer.draw(fullQualityCanvas, stackchan::SceneId::Fluid, analyzed, variation, 3.0F,
+                     0.016F, 200.0F);
+  sceneRenderer.draw(reducedQualityCanvas, stackchan::SceneId::Fluid, analyzed, variation, 3.0F,
+                     0.016F, 200.0F);
+  assert(reducedQualityCanvas.operations < fullQualityCanvas.operations);
+
+  // 透過背景設定がホストCanvasのclear alphaまで伝播することを保証する。
+  CountingCanvas transparentCanvas;
+  sceneRenderer.draw(transparentCanvas, stackchan::SceneId::Bars, analyzed, variation, 3.0F, 0.016F,
+                     200.0F, {}, nullptr, stackchan::Background::Transparent);
+  assert(transparentCanvas.lastClearAlpha == 0);
 
   // 異なるSemantic PatchのOperator構成がCPU描画結果へ反映されることを保証する。
   CountingCanvas firstSemanticCanvas;
@@ -262,6 +426,183 @@ int main() {
                      stackchan::deriveSemanticPatchJson("different-operators-007"));
   assert(firstSemanticCanvas.fingerprint != secondSemanticCanvas.fingerprint);
 
+  // 全Generatorがcatalog掲載だけで終わらず、CPU描画結果へ個別に影響することを保証する。
+  std::unordered_set<std::uint32_t> generatorFingerprints;
+  for (std::size_t index = 0; index < stackchan::kGeneratorDefinitionCount; ++index) {
+    const std::string generatorPatch =
+        std::string{"{\"schemaVersion\":1,\"seed\":\"catalog-coverage\",\"operators\":[{\"id\":"
+                    "\"op0\",\"generatorId\":\""} +
+        stackchan::kGeneratorDefinitions[index].id + "\",\"generatorVersion\":1}]}";
+    CountingCanvas generatorCanvas;
+    sceneRenderer.draw(generatorCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                       3.0F, 0.016F, 200.0F, generatorPatch);
+    generatorFingerprints.insert(generatorCanvas.fingerprint);
+  }
+  assert(generatorFingerprints.size() == stackchan::kGeneratorDefinitionCount);
+
+  // Semantic Patchのクロスフェード端点が旧Patchと新Patchの単独描画へ一致することを保証する。
+  const std::string outgoingPatch = minimalPatchJson("transition-outgoing");
+  const std::string incomingPatch = minimalPatchJson("transition-incoming");
+  CountingCanvas directOutgoingCanvas;
+  CountingCanvas transitionStartCanvas;
+  CountingCanvas directIncomingCanvas;
+  CountingCanvas transitionEndCanvas;
+  sceneRenderer.draw(directOutgoingCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, outgoingPatch);
+  sceneRenderer.draw(transitionStartCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, incomingPatch, nullptr, stackchan::Background::Black,
+                     outgoingPatch, {1.0F, 1.0F, 1.0F, 0.0F, true});
+  sceneRenderer.draw(directIncomingCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, incomingPatch);
+  sceneRenderer.draw(transitionEndCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, incomingPatch, nullptr, stackchan::Background::Black,
+                     outgoingPatch, {1.0F, 1.0F, 1.0F, 1.0F, true});
+  assert(transitionStartCanvas.fingerprint == directOutgoingCanvas.fingerprint);
+  assert(transitionEndCanvas.fingerprint == directIncomingCanvas.fingerprint);
+
+  // 同一Topologyではpalette・parameter・modulationが互いの進行度に影響されず補間されることを保証する。
+  const std::string attributeBasePatch = minimalPatchJson("attribute-base");
+  std::string paletteTargetPatch = attributeBasePatch;
+  paletteTargetPatch.replace(paletteTargetPatch.find("\"hueOffset\":200"), 15, "\"hueOffset\":20");
+  CountingCanvas paletteBaseCanvas;
+  CountingCanvas paletteStartCanvas;
+  CountingCanvas paletteEndCanvas;
+  sceneRenderer.draw(paletteBaseCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, attributeBasePatch);
+  sceneRenderer.draw(paletteStartCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, paletteTargetPatch, nullptr,
+                     stackchan::Background::Black, attributeBasePatch,
+                     {0.0F, 1.0F, 1.0F, 1.0F, false});
+  sceneRenderer.draw(paletteEndCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation, 3.0F,
+                     0.016F, 200.0F, paletteTargetPatch);
+  assert(paletteStartCanvas.fingerprint == paletteBaseCanvas.fingerprint);
+  assert(paletteEndCanvas.fingerprint != paletteBaseCanvas.fingerprint);
+
+  std::string parameterTargetPatch = attributeBasePatch;
+  parameterTargetPatch.replace(parameterTargetPatch.find("\"cells\":8"), 9, "\"cells\":16");
+  CountingCanvas parameterStartCanvas;
+  CountingCanvas parameterEndCanvas;
+  sceneRenderer.draw(parameterStartCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, parameterTargetPatch, nullptr,
+                     stackchan::Background::Black, attributeBasePatch,
+                     {1.0F, 0.0F, 1.0F, 1.0F, false});
+  sceneRenderer.draw(parameterEndCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, parameterTargetPatch);
+  assert(parameterStartCanvas.fingerprint == paletteBaseCanvas.fingerprint);
+  assert(parameterEndCanvas.fingerprint != paletteBaseCanvas.fingerprint);
+
+  std::string discreteParameterBasePatch = attributeBasePatch;
+  discreteParameterBasePatch.replace(discreteParameterBasePatch.find("\"cells\":8"), 9,
+                                     "\"cells\":8,\"enabled\":false");
+  std::string discreteParameterTargetPatch = discreteParameterBasePatch;
+  discreteParameterTargetPatch.replace(discreteParameterTargetPatch.find("\"enabled\":false"), 15,
+                                       "\"enabled\":true");
+  CountingCanvas discreteParameterBaseCanvas;
+  CountingCanvas discreteParameterStartCanvas;
+  CountingCanvas discreteParameterEndCanvas;
+  sceneRenderer.draw(discreteParameterBaseCanvas, stackchan::SceneId::SemanticSynth, analyzed,
+                     variation, 3.0F, 0.016F, 200.0F, discreteParameterBasePatch);
+  sceneRenderer.draw(discreteParameterStartCanvas, stackchan::SceneId::SemanticSynth, analyzed,
+                     variation, 3.0F, 0.016F, 200.0F, discreteParameterTargetPatch, nullptr,
+                     stackchan::Background::Black, discreteParameterBasePatch,
+                     {1.0F, 0.0F, 1.0F, 1.0F, false});
+  sceneRenderer.draw(discreteParameterEndCanvas, stackchan::SceneId::SemanticSynth, analyzed,
+                     variation, 3.0F, 0.016F, 200.0F, discreteParameterTargetPatch);
+  assert(discreteParameterStartCanvas.fingerprint == discreteParameterBaseCanvas.fingerprint);
+  assert(discreteParameterEndCanvas.fingerprint != discreteParameterBaseCanvas.fingerprint);
+
+  std::string paletteModeTargetPatch = attributeBasePatch;
+  paletteModeTargetPatch.replace(paletteModeTargetPatch.find("\"mode\":\"mono\""), 13,
+                                 "\"mode\":\"rainbow\"");
+  CountingCanvas paletteModeStartCanvas;
+  CountingCanvas paletteModeEndCanvas;
+  sceneRenderer.draw(paletteModeStartCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, paletteModeTargetPatch, nullptr,
+                     stackchan::Background::Black, attributeBasePatch,
+                     {0.0F, 1.0F, 1.0F, 1.0F, false});
+  sceneRenderer.draw(paletteModeEndCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, paletteModeTargetPatch);
+  assert(paletteModeStartCanvas.fingerprint == paletteBaseCanvas.fingerprint);
+  assert(paletteModeEndCanvas.fingerprint != paletteBaseCanvas.fingerprint);
+
+  std::string modulationTargetPatch = attributeBasePatch;
+  modulationTargetPatch.replace(
+      modulationTargetPatch.find("\"routes\":[]"), 11,
+      R"("routes":[{"source":"audio:bass","target":"src0.cells","amount":8,"polarity":"unipolar","smoothing":0}])");
+  stackchan::AnalyzedAudioFrame transitionAudio = analyzed;
+  transitionAudio.bass = 1.0F;
+  CountingCanvas modulationBaseCanvas;
+  CountingCanvas modulationStartCanvas;
+  CountingCanvas modulationEndCanvas;
+  sceneRenderer.draw(modulationBaseCanvas, stackchan::SceneId::SemanticSynth, transitionAudio,
+                     variation, 3.0F, 1.0F, 200.0F, attributeBasePatch);
+  sceneRenderer.draw(modulationStartCanvas, stackchan::SceneId::SemanticSynth, transitionAudio,
+                     variation, 3.0F, 1.0F, 200.0F, modulationTargetPatch, nullptr,
+                     stackchan::Background::Black, attributeBasePatch,
+                     {1.0F, 1.0F, 0.0F, 1.0F, false});
+  sceneRenderer.draw(modulationEndCanvas, stackchan::SceneId::SemanticSynth, transitionAudio,
+                     variation, 3.0F, 1.0F, 200.0F, modulationTargetPatch);
+  assert(modulationStartCanvas.fingerprint == modulationBaseCanvas.fingerprint);
+  assert(modulationEndCanvas.fingerprint != modulationBaseCanvas.fingerprint);
+
+  // 属性遷移中の再提案が直前の目標値へ跳ばず、現在描画中の中間状態から始まることを保証する。
+  std::string firstRetargetPatch = attributeBasePatch;
+  firstRetargetPatch.replace(firstRetargetPatch.find("\"hueOffset\":200"), 15, "\"hueOffset\":80");
+  std::string secondRetargetPatch = attributeBasePatch;
+  secondRetargetPatch.replace(secondRetargetPatch.find("\"hueOffset\":200"), 15,
+                              "\"hueOffset\":320");
+  CountingCanvas retargetBaseCanvas;
+  CountingCanvas transitionMiddleCanvas;
+  CountingCanvas retargetStartCanvas;
+  sceneRenderer.draw(retargetBaseCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, attributeBasePatch);
+  sceneRenderer.draw(transitionMiddleCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, firstRetargetPatch, nullptr,
+                     stackchan::Background::Black, attributeBasePatch,
+                     {0.4F, 0.4F, 0.4F, 1.0F, false});
+  sceneRenderer.draw(retargetStartCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, secondRetargetPatch, nullptr,
+                     stackchan::Background::Black, firstRetargetPatch,
+                     {0.0F, 0.0F, 0.0F, 1.0F, false});
+  assert(transitionMiddleCanvas.fingerprint == retargetStartCanvas.fingerprint);
+
+  // routeのsource・amount・polarity・smoothingがCPU描画へ実際に反映されることを保証する。
+  const std::string unmodulatedPatch = minimalPatchJson("route-test");
+  std::string modulatedPatch = unmodulatedPatch;
+  modulatedPatch.replace(
+      modulatedPatch.find("\"routes\":[]"), 11,
+      R"("routes":[{"source":"audio:bass","target":"src0.cells","amount":8,"polarity":"unipolar","smoothing":0}])");
+  stackchan::AnalyzedAudioFrame routeAudio = analyzed;
+  routeAudio.bass = 1.0F;
+  CountingCanvas unmodulatedCanvas;
+  CountingCanvas modulatedCanvas;
+  sceneRenderer.draw(unmodulatedCanvas, stackchan::SceneId::SemanticSynth, routeAudio, variation,
+                     3.0F, 1.0F, 200.0F, unmodulatedPatch);
+  sceneRenderer.draw(modulatedCanvas, stackchan::SceneId::SemanticSynth, routeAudio, variation,
+                     3.0F, 1.0F, 200.0F, modulatedPatch);
+  assert(unmodulatedCanvas.fingerprint != modulatedCanvas.fingerprint);
+
+  // Topologyクロスフェード中に旧・新デッキのmodulation平滑化状態が毎フレーム維持されることを保証する。
+  std::string smoothedOutgoingPatch = minimalPatchJson("deck-outgoing");
+  smoothedOutgoingPatch.replace(
+      smoothedOutgoingPatch.find("\"routes\":[]"), 11,
+      R"("routes":[{"source":"audio:bass","target":"src0.cells","amount":8,"polarity":"unipolar","smoothing":1}])");
+  std::string differentTopologyPatch = minimalPatchJson("deck-incoming");
+  differentTopologyPatch.replace(differentTopologyPatch.find("\"generatorId\":\"grid\""), 20,
+                                 "\"generatorId\":\"points\"");
+  stackchan::SceneRenderer topologyRenderer;
+  CountingCanvas firstDeckFrame;
+  CountingCanvas secondDeckFrame;
+  topologyRenderer.draw(firstDeckFrame, stackchan::SceneId::SemanticSynth, routeAudio, variation,
+                        3.0F, 1.0F, 200.0F, differentTopologyPatch, nullptr,
+                        stackchan::Background::Black, smoothedOutgoingPatch,
+                        {1.0F, 1.0F, 1.0F, 0.5F, true});
+  topologyRenderer.draw(secondDeckFrame, stackchan::SceneId::SemanticSynth, routeAudio, variation,
+                        3.0F, 1.0F, 200.0F, differentTopologyPatch, nullptr,
+                        stackchan::Background::Black, smoothedOutgoingPatch,
+                        {1.0F, 1.0F, 1.0F, 0.5F, true});
+  assert(firstDeckFrame.fingerprint != secondDeckFrame.fingerprint);
+
   // base64画像をSHA-256で登録し、stamp PatchがCanvasの画像描画を呼ぶことを保証する。
   stackchan::ImageStore imageStore;
   const auto imageResult = imageStore.putBase64("pixel.png",
@@ -272,12 +613,74 @@ int main() {
   assert(imageResult.asset != nullptr);
   assert(imageResult.asset->hash ==
          "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460");
+
+  // 64 KiB未満の複数リクエストへ分割しても、単発送信と同じ画像になることを保証する。
+  stackchan::ImageStore chunkedImageStore;
+  const auto beganImage = chunkedImageStore.beginBase64("pixel.png", "image/png", 68);
+  assert(beganImage.ok);
+  assert(chunkedImageStore.uploadActive());
+  assert(chunkedImageStore.appendBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC").ok);
+  assert(chunkedImageStore.appendBase64("AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").ok);
+  const auto committedImage = chunkedImageStore.commitBase64();
+  assert(committedImage.ok);
+  assert(committedImage.asset != nullptr);
+  assert(committedImage.asset->hash == imageResult.asset->hash);
+  assert(!chunkedImageStore.uploadActive());
+
+  // 不正chunkで転送状態を破棄し、次の画像転送を再起動できることを保証する。
+  assert(chunkedImageStore.beginBase64("broken.png", "image/png", 3).ok);
+  assert(!chunkedImageStore.appendBase64("not-base64").ok);
+  assert(!chunkedImageStore.uploadActive());
+  assert(chunkedImageStore.beginBase64("retry.png", "image/png", 68).ok);
+  chunkedImageStore.cancelBase64();
+
+  // SD復元用の生バイト登録が同じhashを再検証し、永続化後にRAMを解放することを保証する。
+  stackchan::ImageStore restoredImageStore;
+  const auto restoredImage = restoredImageStore.putBytes("restored.png", imageResult.asset->bytes,
+                                                         imageResult.asset->mime);
+  assert(restoredImage.ok);
+  assert(restoredImage.asset != nullptr);
+  assert(restoredImage.asset->hash == imageResult.asset->hash);
+  assert(restoredImageStore.markPersisted(restoredImage.asset->hash, "/vj-images/restored.png"));
+  assert(restoredImageStore.latest()->bytes.empty());
+  assert(restoredImageStore.latest()->storagePath == "/vj-images/restored.png");
+
+  // 5 MiB上限の画像でもSHA-256計算用の全体コピーを作らず登録できることを保証する。
+  std::vector<std::uint8_t> maximumImageBytes(5U * 1024U * 1024U, 0U);
+  constexpr std::array<std::uint8_t, 8> pngSignature = {0x89U, 0x50U, 0x4EU, 0x47U,
+                                                        0x0DU, 0x0AU, 0x1AU, 0x0AU};
+  std::copy(pngSignature.begin(), pngSignature.end(), maximumImageBytes.begin());
+  stackchan::ImageStore maximumImageStore;
+  const auto maximumImage =
+      maximumImageStore.putBytes("maximum.png", std::move(maximumImageBytes), "image/png");
+  assert(maximumImage.ok);
+  assert(maximumImage.asset != nullptr);
+  assert(maximumImage.asset->hash ==
+         "a3f8fb5b0c161cebf9bd46ee1fbe1b1413fb83f789ebc25303534be8e8b3b080");
+  assert(maximumImageStore.markPersisted(maximumImage.asset->hash, "/vj-images/maximum.png"));
+
+  // 拡張子や申告MIMEだけではなく実バイトのsignatureを検証することを保証する。
+  const auto wrongMimeImage =
+      chunkedImageStore.putBase64("pixel.jpg",
+                                  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0"
+                                  "lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                                  "image/jpeg");
+  assert(!wrongMimeImage.ok);
+  assert(wrongMimeImage.issue.find("MIME") != std::string::npos);
   const std::string imagePatch =
       R"({"schemaVersion":1,"seed":"image-patch","operators":[{"id":"src0","generatorId":"stamp","generatorVersion":1,"parameters":{"fit":"contain","scale":1,"invert":false}},{"id":"mod0","generatorId":"spin","generatorVersion":1,"parameters":{"rate":0.4,"wobble":0.2}},{"id":"mat0","generatorId":"neon","generatorVersion":1,"parameters":{"hue":200,"intensity":1.2}}],"routes":[],"palette":{"mode":"mono","hueOffset":200,"saturation":80,"lightness":55},"composition":{"symmetry":4,"scale":1,"speed":1},"qualityTier":"medium","images":{"src0.image":{"name":"pixel.png","hash":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"}}})";
   CountingCanvas imageCanvas;
   sceneRenderer.draw(imageCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation, 3.0F,
                      0.016F, 200.0F, imagePatch, &imageStore);
   assert(imageCanvas.imageOperations == 1);
+
+  // 複数stamp Operatorの画像参照を最初の1件に縮退させず、すべて描画することを保証する。
+  const std::string secondImagePatch =
+      R"({"schemaVersion":1,"seed":"two-images","operators":[{"id":"src0","generatorId":"stamp","generatorVersion":1,"parameters":{"fit":"contain","scale":1,"invert":false}},{"id":"src1","generatorId":"stamp","generatorVersion":1,"parameters":{"fit":"cover","scale":1,"invert":false}},{"id":"mat0","generatorId":"neon","generatorVersion":1,"parameters":{"hue":200,"intensity":1.2}}],"routes":[],"palette":{"mode":"mono","hueOffset":200,"saturation":80,"lightness":55},"composition":{"symmetry":4,"scale":1,"speed":1},"qualityTier":"medium","images":{"src0.image":{"name":"pixel-a.png","hash":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"},"src1.image":{"name":"pixel-b.png","hash":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"}}})";
+  CountingCanvas multipleImageCanvas;
+  sceneRenderer.draw(multipleImageCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, secondImagePatch, &imageStore);
+  assert(multipleImageCanvas.imageOperations == 2);
 
   // 秒・小節・外部トリガーのTimelineイベントが一度だけ順序通り発火することを保証する。
   stackchan::VisualEvent secondsEvent{};
@@ -337,6 +740,14 @@ int main() {
   const auto catalogRequest = stackchan::parseControlRequest(R"({"id":13,"method":"getCatalog"})");
   assert(catalogRequest.ok);
   assert(catalogRequest.method == stackchan::ControlMethod::GetCatalog);
+  const auto beginImageRequest = stackchan::parseControlRequest(
+      R"({"id":16,"method":"beginImageUpload","params":{"name":"pixel.png","mime":"image/png","byteLength":68}})");
+  assert(beginImageRequest.ok);
+  assert(beginImageRequest.method == stackchan::ControlMethod::BeginImageUpload);
+  const auto appendImageRequest = stackchan::parseControlRequest(
+      R"({"id":17,"method":"appendImageUpload","params":{"bytesBase64":"iVBORw0K"}})");
+  assert(appendImageRequest.ok);
+  assert(appendImageRequest.method == stackchan::ControlMethod::AppendImageUpload);
 
   // 既存vj-ctlが送る入れ子JSONをTimelineOpへ変換し、patch JSONも欠落させないことを保証する。
   const std::string timelineJson =
@@ -348,7 +759,7 @@ int main() {
   assert(timelineRequest.method == stackchan::ControlMethod::ApplyTimelineOp);
   assert(timelineRequest.timelineOperation.kind == stackchan::TimelineOpKind::Add);
   assert(timelineRequest.timelineOperation.event.start.kind == stackchan::AnchorKind::External);
-  assert(timelineRequest.timelineOperation.event.intent.seed == "rainy-qilou");
+  assert(timelineRequest.timelineOperation.event.intent.seed == "patch-seed");
   assert(timelineRequest.timelineOperation.event.intent.patchJson.find("patch-seed") !=
          std::string::npos);
   const std::string patchJson = R"({"id":7,"method":"proposePatch","params":{"patch":)" +
@@ -386,7 +797,7 @@ int main() {
   const auto fireResult = controlService.dispatch(fireRequest, analyzed, 3600, 43);
   assert(fireResult.settingsChanged);
   assert(controlRuntime.settings().scene == stackchan::SceneId::SemanticSynth);
-  assert(controlRuntime.settings().seed == "rainy-qilou");
+  assert(controlRuntime.settings().seed == "patch-seed");
   assert(controlRuntime.patchJson().find("patch-seed") != std::string::npos);
   const auto directPatchResult = controlService.dispatch(patchRequest, analyzed, 3700, 44);
   assert(directPatchResult.settingsChanged);
@@ -395,7 +806,7 @@ int main() {
   assert(invalidPatchResult.response.find("\"ok\":false") != std::string::npos);
   assert(invalidPatchResult.response.find("\"issues\":[") != std::string::npos);
   controlRuntime.update({}, 2.0F, 0);
-  assert(controlRuntime.variation().seed.rfind("patch-", 0) == 0);
+  assert(controlRuntime.variation().seed == "direct-patch");
 
   // 録画開始からTimeline操作の記録・停止までを既存vj-ctlの応答形式で保持することを保証する。
   const auto startRecordingRequest =
@@ -447,13 +858,20 @@ int main() {
   stackchan::TempoState controlTempo{};
   controlTempo.bpm = 120.0F;
   controlTempo.locked = true;
-  const stackchan::ControlSnapshot controlSnapshot{
-      &runtime.settings(),  &controlTempo, &timeline, &scheduler,
-      &runtime.patchJson(), true,          false,     3.5};
+  const stackchan::ControlSnapshot controlSnapshot{&runtime.settings(),
+                                                   &controlTempo,
+                                                   &timeline,
+                                                   &scheduler,
+                                                   &runtime.patchJson(),
+                                                   0.75F,
+                                                   true,
+                                                   false,
+                                                   3.5};
   const std::string stateResponse = stackchan::encodeControlState(7, controlSnapshot);
   assert(stateResponse.find("\"id\":7") != std::string::npos);
   assert(stateResponse.find("\"bpm\":120.000") != std::string::npos);
   assert(stateResponse.find("\"transitionActive\":true") != std::string::npos);
+  assert(stateResponse.find("\"qualityScale\":0.750") != std::string::npos);
   assert(stateResponse.find("\"timeline\":") != std::string::npos);
   assert(stateResponse.find("\"firedIds\":[\"seconds\",\"bar\",\"external\"]") !=
          std::string::npos);

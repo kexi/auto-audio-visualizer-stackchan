@@ -44,6 +44,7 @@ const DEFAULT_ROOM_HOST = 'auto-audio-visualizer.<account>.workers.dev';
 
 /** 接続からコマンド完了までの全体上限。bridge も synth も無言のまま固まる場合の保険。 */
 const OVERALL_TIMEOUT_MS = 20_000;
+const IMAGE_TIMEOUT_MS = 180_000;
 
 // 由来: src/synth/types.ts の DEFAULT_TRANSITION と src/ui/TimelinePanel.tsx の
 // TRANSITION_PRESETS を写したもの（CLI は .ts を import できないため複製）。
@@ -76,6 +77,7 @@ const USAGE = `使い方: node scripts/vj-ctl.mjs <command> [options]
 
   state                        現在の SynthControlState を表示
   catalog                      Generator カタログ（id / category / tags / parameters）を表示
+  settings <file.json>         ホスト/CoreS3の設定を部分更新（gain / hue / cycle等）
   seed <seed>                  seed から派生した Patch へ即遷移
   patch <file.json>            VisualPatch を即適用（検証に落ちると issues が返る）
   image <file> [--name <n>]    画像 (png/jpg/webp/svg) を読み込ませる（上限 ${
@@ -348,6 +350,16 @@ async function run(conn, positional, flags) {
     case 'catalog':
       return jsonOut(await conn.request('getCatalog'));
 
+    case 'settings': {
+      const hasSettingsPath = rest.length > 0;
+      if (!hasSettingsPath) usageError('settings には <file.json> が必要です');
+      const settings = readJsonFile(rest[0], 'settings');
+      const isSettingsObject =
+        settings !== null && typeof settings === 'object' && !Array.isArray(settings);
+      if (!isSettingsObject) usageError('settings はJSON objectで指定してください');
+      return jsonOut(await conn.request('setSettings', settings));
+    }
+
     case 'seed': {
       if (rest.length === 0) usageError('seed には <seed> が必要です');
       return jsonOut(await conn.request('proposeSeed', { seed: rest[0] }));
@@ -515,16 +527,17 @@ async function main() {
 
     conn = openConnection(target);
     // 通信が固まったまま端末を占有しないための最終防衛線。
+    const timeoutMs = positional[0] === 'image' ? IMAGE_TIMEOUT_MS : OVERALL_TIMEOUT_MS;
     overall = setTimeout(() => {
       timedOut = true;
       // 接続が拒否されずに沈黙する環境（WSL 等）ではここが唯一の手掛かりになるので、
       // bridge / Worker 未起動とブラウザ無応答の両方を疑えるヒントを出す。
       fail(
-        `timeout after ${OVERALL_TIMEOUT_MS / 1000}s`,
+        `timeout after ${timeoutMs / 1000}s`,
         `${target} に接続できているか、ブラウザが応答しているか確認してください。`,
       );
       conn.abort();
-    }, OVERALL_TIMEOUT_MS);
+    }, timeoutMs);
 
     await conn.ready;
     const res = await run(conn, positional, flags);

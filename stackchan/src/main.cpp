@@ -1,11 +1,17 @@
+// clang-format off
+// M5GFXは先にFS_Hが定義された場合だけファイル描画overloadを提供する。
+#include <SD.h>
 #include <M5StackChan.h>
+// clang-format on
 #include <Preferences.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "visualizer/audio.hpp"
 #include "visualizer/control.hpp"
@@ -17,6 +23,7 @@ namespace {
 constexpr std::uint32_t kSampleRate = 16000;
 constexpr std::size_t kSampleCount = 256;
 constexpr std::size_t kMaximumControlLine = 65536;
+constexpr const char* kImageDirectory = "/vj-images";
 
 std::array<std::int16_t, kSampleCount> samples{};
 stackchan::AudioAnalyzer analyzer;
@@ -29,6 +36,8 @@ std::uint32_t previousMillis = 0;
 std::uint32_t lastMotionBar = 0;
 std::string controlLine;
 bool discardingControlLine = false;
+bool imageStorageReady = false;
+float frameBufferScale = 1.0F;
 
 std::uint16_t toRgb565(stackchan::Color color) {
   return static_cast<std::uint16_t>(((color.red & 0xF8U) << 8U) | ((color.green & 0xFCU) << 3U) |
@@ -88,10 +97,19 @@ public:
 
   bool image(const stackchan::ImageAsset& asset, int x, int y, int width, int height) override {
     const bool isJpeg = asset.mime == "image/jpeg" || asset.mime == "image/jpg";
+    const bool usesPersistedFile = imageStorageReady && !asset.storagePath.empty();
+    const bool drawsPersistedJpeg = usesPersistedFile && isJpeg;
+    if (drawsPersistedJpeg) {
+      return canvas_.drawJpgFile(SD, asset.storagePath.c_str(), x, y, width, height);
+    }
+    const bool isPng = asset.mime == "image/png";
+    const bool drawsPersistedPng = usesPersistedFile && isPng;
+    if (drawsPersistedPng) {
+      return canvas_.drawPngFile(SD, asset.storagePath.c_str(), x, y, width, height);
+    }
     if (isJpeg) {
       return canvas_.drawJpg(asset.bytes.data(), asset.bytes.size(), x, y, width, height);
     }
-    const bool isPng = asset.mime == "image/png";
     if (isPng) {
       return canvas_.drawPng(asset.bytes.data(), asset.bytes.size(), x, y, width, height);
     }
@@ -103,6 +121,110 @@ private:
 };
 
 M5CanvasAdapter canvas(frameBuffer);
+
+void setFrameBufferScale(float scale) {
+  const float safeScale = std::clamp(scale, 0.5F, 1.0F);
+  const bool alreadyConfigured = std::abs(frameBufferScale - safeScale) < 0.001F;
+  if (alreadyConfigured) {
+    return;
+  }
+  frameBuffer.deleteSprite();
+  frameBufferScale = safeScale;
+  const int width = std::max(1, static_cast<int>(std::round(320.0F * safeScale)));
+  const int height = std::max(1, static_cast<int>(std::round(240.0F * safeScale)));
+  frameBuffer.createSprite(width, height);
+  frameBuffer.setPivot(width / 2, height / 2);
+}
+
+void presentFrameBuffer() {
+  const bool usesNativeResolution = std::abs(frameBufferScale - 1.0F) < 0.001F;
+  if (usesNativeResolution) {
+    frameBuffer.pushSprite(0, 0);
+    return;
+  }
+  M5StackChan.Display().setPivot(160, 120);
+  const float zoom = 1.0F / frameBufferScale;
+  frameBuffer.pushRotateZoom(&M5StackChan.Display(), 160.0F, 120.0F, 0.0F, zoom, zoom);
+}
+
+std::string imageExtension(const std::string& mime) {
+  return mime == "image/png" ? ".png" : ".jpg";
+}
+
+std::string imageMimeFromPath(const std::string& path) {
+  const bool isPng = path.size() >= 4U && path.substr(path.size() - 4U) == ".png";
+  return isPng ? "image/png" : "image/jpeg";
+}
+
+bool persistLatestImage() {
+  const stackchan::ImageAsset* asset = controlService.images().latest();
+  const bool hasMemoryAsset = asset != nullptr && !asset->bytes.empty();
+  const bool cannotPersistImage = !imageStorageReady || !hasMemoryAsset;
+  if (cannotPersistImage) {
+    return false;
+  }
+  const std::string path =
+      std::string{kImageDirectory} + "/" + asset->hash + imageExtension(asset->mime);
+  const bool isAlreadyPersisted = SD.exists(path.c_str());
+  if (isAlreadyPersisted) {
+    return controlService.images().markPersisted(asset->hash, path);
+  }
+  File file = SD.open(path.c_str(), FILE_WRITE);
+  const bool didOpen = static_cast<bool>(file);
+  const bool failedToOpen = !didOpen;
+  if (failedToOpen) {
+    return false;
+  }
+  const std::size_t byteCount = asset->bytes.size();
+  const bool didWrite = file.write(asset->bytes.data(), byteCount) == byteCount;
+  file.close();
+  const bool failedToWrite = !didWrite;
+  if (failedToWrite) {
+    SD.remove(path.c_str());
+    return false;
+  }
+  return controlService.images().markPersisted(asset->hash, path);
+}
+
+void loadPersistedImages() {
+  const int chipSelect = M5.getPin(m5::pin_name_t::sd_spi_cs);
+  imageStorageReady = chipSelect >= 0 && SD.begin(chipSelect, SPI, 25000000);
+  const bool storageUnavailable = !imageStorageReady;
+  if (storageUnavailable) {
+    return;
+  }
+  const bool needsImageDirectory = !SD.exists(kImageDirectory);
+  if (needsImageDirectory) {
+    SD.mkdir(kImageDirectory);
+  }
+  File directory = SD.open(kImageDirectory);
+  const bool hasDirectory = static_cast<bool>(directory) && directory.isDirectory();
+  const bool directoryUnavailable = !hasDirectory;
+  if (directoryUnavailable) {
+    return;
+  }
+  File file = directory.openNextFile();
+  while (file) {
+    const bool canLoad =
+        !file.isDirectory() && file.size() > 0U && file.size() <= 5U * 1024U * 1024U;
+    if (canLoad) {
+      const std::string path = file.path();
+      std::vector<std::uint8_t> bytes(file.size());
+      const bool didRead = file.read(bytes.data(), bytes.size()) == bytes.size();
+      if (didRead) {
+        const auto stored = controlService.images().putBytes(file.name(), std::move(bytes),
+                                                             imageMimeFromPath(path));
+        const bool restored = stored.ok && stored.asset != nullptr;
+        if (restored) {
+          controlService.images().markPersisted(stored.asset->hash, path);
+        }
+      }
+    }
+    file.close();
+    file = directory.openNextFile();
+  }
+  directory.close();
+}
 
 stackchan::Settings loadSettings() {
   stackchan::Settings settings{};
@@ -223,6 +345,10 @@ bool dispatchControl(const stackchan::ControlRequest& request,
                      std::uint32_t entropy) {
   const auto result = controlService.dispatch(request, audio, nowMs, entropy);
   Serial.println(result.response.c_str());
+  const bool shouldPersistImage = result.imageChanged;
+  if (shouldPersistImage) {
+    persistLatestImage();
+  }
   return result.settingsChanged;
 }
 
@@ -259,6 +385,7 @@ bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32
     } else {
       controlLine.clear();
       discardingControlLine = true;
+      controlService.images().cancelBase64();
       Serial.println(stackchan::encodeControlError(0, "request exceeds 65536 bytes").c_str());
     }
   }
@@ -268,13 +395,15 @@ bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32
 } // namespace
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(921600);
   M5StackChan.begin();
+  loadPersistedImages();
   preferences.begin("visualizer", false);
   runtime.setSettings(loadSettings());
   M5StackChan.Display().setRotation(1);
   frameBuffer.setColorDepth(16);
   frameBuffer.createSprite(320, 240);
+  frameBuffer.setPivot(160, 120);
 
   auto microphoneConfig = M5.Mic.config();
   microphoneConfig.sample_rate = kSampleRate;
@@ -304,12 +433,15 @@ void loop() {
     saveSettings();
   }
   updateBody(audio, runtime.variation());
+  setFrameBufferScale(runtime.qualityScale());
 
   const float elapsedSeconds = static_cast<float>(currentMillis) / 1000.0F;
   const float hue = runtime.settings().hueMode == stackchan::HueMode::Fixed
                         ? runtime.settings().fixedHue
                         : elapsedSeconds * 12.0F * runtime.variation().speed;
   sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
-                     deltaSeconds, hue, runtime.patchJson(), &controlService.images());
-  frameBuffer.pushSprite(0, 0);
+                     deltaSeconds, hue, runtime.patchJson(), &controlService.images(),
+                     runtime.settings().background, runtime.previousPatchJson(),
+                     runtime.patchTransitionProgress());
+  presentFrameBuffer();
 }

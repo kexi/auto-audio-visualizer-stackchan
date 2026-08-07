@@ -22,6 +22,12 @@ compile: configure
 run: compile
     ./build/host/stackchan-simulator
 
+run-audio device="default": compile
+    ./build/host/stackchan-simulator --audio-device {{quote(device)}}
+
+audio-devices: compile
+    ./build/host/stackchan-simulator --list-audio-devices
+
 run-control: compile
     ./build/host/stackchan-simulator --control-stdio
 
@@ -38,12 +44,23 @@ snapshot-check: compile
     SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --scene semantic-synth --screenshot build/host/snapshot-check.bmp
     test -s build/host/snapshot-check.bmp
 
+scene-check: compile
+    for scene in bars waveform particles radial rings lissajous fluid smoke lava aurora semantic-synth; SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --scene $scene --screenshot build/host/scene-$scene.bmp; test -s build/host/scene-$scene.bmp; end
+
 test-host: compile
     ctest --test-dir build/host --output-on-failure
 
 control-check: compile
     SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --control-stdio < stackchan/test/control_requests.jsonl > build/host/control-responses.jsonl
     node scripts/check-stackchan-control.mjs build/host/control-responses.jsonl
+
+image-check: compile
+    SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --control-stdio --screenshot build/host/image-check.bmp --require-image < stackchan/test/control_requests.jsonl > build/host/image-check-responses.jsonl
+    test -s build/host/image-check.bmp
+
+audio-check: compile
+    SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --audio-device default --screenshot build/host/audio-check.bmp
+    test -s build/host/audio-check.bmp
 
 firmware:
     pio run --project-dir stackchan
@@ -94,4 +111,4 @@ secrets:
 secrets-staged:
     gitleaks git --pre-commit --staged --redact
 
-all: catalog-check format-check lint actions secrets test-host control-check snapshot-check web-test web-compile firmware
+all: catalog-check format-check lint actions secrets test-host control-check image-check audio-check scene-check web-test web-compile firmware

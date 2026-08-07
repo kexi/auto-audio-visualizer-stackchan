@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <optional>
 
 namespace stackchan {
 namespace {
@@ -19,6 +21,22 @@ float wrapHue(float hue) {
     wrapped += 360.0F;
   }
   return wrapped;
+}
+
+float lerp(float from, float to, float progress) { return from + (to - from) * progress; }
+
+float lerpHue(float from, float to, float progress) {
+  float distance = std::fmod(to - from + 540.0F, 360.0F) - 180.0F;
+  const bool wrappedTooFar = distance < -180.0F;
+  if (wrappedTooFar) {
+    distance += 360.0F;
+  }
+  return wrapHue(from + distance * progress);
+}
+
+std::size_t flatObjectEnd(const std::string& json, std::size_t objectStart) {
+  const std::size_t end = json.find('}', objectStart);
+  return end == std::string::npos ? json.size() : end;
 }
 
 Color sceneColor(const Variation& variation, float hue, float offset, float lightness,
@@ -44,6 +62,153 @@ float hashUnit(std::uint32_t value) {
   value *= 0x846CA68BU;
   value ^= value >> 16U;
   return static_cast<float>(value >> 8U) / 16777216.0F;
+}
+
+class OpacityCanvas final : public Canvas {
+public:
+  OpacityCanvas(Canvas& target, float opacity)
+      : target_(target), opacity_(std::clamp(opacity, 0.0F, 1.0F)) {}
+
+  [[nodiscard]] int width() const override { return target_.width(); }
+  [[nodiscard]] int height() const override { return target_.height(); }
+  void clear(Color color) override { static_cast<void>(color); }
+
+  void line(int x1, int y1, int x2, int y2, Color color, int thickness) override {
+    const bool drawsCommand = shouldDraw();
+    if (drawsCommand) {
+      target_.line(x1, y1, x2, y2, faded(color), thickness);
+    }
+  }
+
+  void rectangle(int x, int y, int width, int height, Color color, bool filled) override {
+    const bool drawsCommand = shouldDraw();
+    if (drawsCommand) {
+      target_.rectangle(x, y, width, height, faded(color), filled);
+    }
+  }
+
+  void circle(int x, int y, int radius, Color color, bool filled) override {
+    const bool drawsCommand = shouldDraw();
+    if (drawsCommand) {
+      target_.circle(x, y, radius, faded(color), filled);
+    }
+  }
+
+  void text(int x, int y, const std::string& value, Color color) override {
+    const bool drawsCommand = shouldDraw();
+    if (drawsCommand) {
+      target_.text(x, y, value, faded(color));
+    }
+  }
+
+  bool image(const ImageAsset& asset, int x, int y, int width, int height) override {
+    const bool drawsCommand = shouldDraw();
+    return drawsCommand && target_.image(asset, x, y, width, height);
+  }
+
+private:
+  [[nodiscard]] bool shouldDraw() {
+    const std::uint32_t command = commandIndex_++;
+    const bool isInvisible = opacity_ <= 0.0F;
+    if (isInvisible) {
+      return false;
+    }
+    const bool isOpaque = opacity_ >= 1.0F;
+    return isOpaque || hashUnit(command ^ 0xD1B54A35U) < opacity_;
+  }
+
+  [[nodiscard]] Color faded(Color color) const {
+    color.alpha = static_cast<std::uint8_t>(static_cast<float>(color.alpha) * opacity_);
+    return color;
+  }
+
+  Canvas& target_;
+  float opacity_ = 1.0F;
+  std::uint32_t commandIndex_ = 0;
+};
+
+std::optional<std::string> stringAfterKey(const std::string& json, const std::string& key,
+                                          std::size_t begin, std::size_t limit) {
+  const std::size_t keyPosition = json.find('"' + key + '"', begin);
+  const bool hasKey = keyPosition != std::string::npos && keyPosition < limit;
+  if (!hasKey) {
+    return std::nullopt;
+  }
+  const std::size_t colon = json.find(':', keyPosition + key.size() + 2U);
+  const std::size_t quote =
+      colon == std::string::npos ? std::string::npos : json.find('"', colon + 1U);
+  const std::size_t endQuote =
+      quote == std::string::npos ? std::string::npos : json.find('"', quote + 1U);
+  const bool hasValue =
+      quote != std::string::npos && endQuote != std::string::npos && endQuote < limit;
+  return hasValue ? std::optional<std::string>{json.substr(quote + 1U, endQuote - quote - 1U)}
+                  : std::nullopt;
+}
+
+std::optional<float> numberAfterKey(const std::string& json, const std::string& key,
+                                    std::size_t begin, std::size_t limit) {
+  const std::size_t keyPosition = json.find('"' + key + '"', begin);
+  const bool hasKey = keyPosition != std::string::npos && keyPosition < limit;
+  if (!hasKey) {
+    return std::nullopt;
+  }
+  const std::size_t colon = json.find(':', keyPosition + key.size() + 2U);
+  const bool hasColon = colon != std::string::npos && colon < limit;
+  if (!hasColon) {
+    return std::nullopt;
+  }
+  const char* start = json.c_str() + colon + 1U;
+  char* end = nullptr;
+  const float value = std::strtof(start, &end);
+  const bool consumedNumber = end != start && static_cast<std::size_t>(end - json.c_str()) <= limit;
+  const bool hasFiniteValue = consumedNumber && std::isfinite(value);
+  return hasFiniteValue ? std::optional<float>{value} : std::nullopt;
+}
+
+float semanticRouteSource(const std::string& source, const AnalyzedAudioFrame& audio,
+                          float elapsedSeconds) {
+  const bool usesBass = source == "audio:bass";
+  if (usesBass) {
+    return audio.bass;
+  }
+  const bool usesMid = source == "audio:mid";
+  if (usesMid) {
+    return audio.mid;
+  }
+  const bool usesTreble = source == "audio:treble";
+  if (usesTreble) {
+    return audio.treble;
+  }
+  const bool usesLevel = source == "audio:level";
+  if (usesLevel) {
+    return audio.level;
+  }
+  const bool usesBeat = source == "audio:beat";
+  if (usesBeat) {
+    return audio.beat ? 1.0F : 0.0F;
+  }
+  const bool usesBeatIntensity = source == "audio:beatIntensity";
+  if (usesBeatIntensity) {
+    return audio.beatIntensity;
+  }
+  const bool usesGridPulse = source == "audio:gridPulse";
+  if (usesGridPulse) {
+    return audio.tempo.gridPulse;
+  }
+  const bool usesBarPulse = source == "audio:barPulse";
+  if (usesBarPulse) {
+    return audio.tempo.barPulse;
+  }
+  const bool usesBeatPhase = source == "audio:beatPhase";
+  if (usesBeatPhase) {
+    return audio.tempo.beatPhase;
+  }
+  const bool usesBarPhase = source == "audio:barPhase";
+  if (usesBarPhase) {
+    return audio.tempo.barPhase;
+  }
+  const bool usesTime = source == "time";
+  return usesTime ? elapsedSeconds : 0.0F;
 }
 
 } // namespace
@@ -96,9 +261,11 @@ Color hsl(float hue, float saturation, float lightness, std::uint8_t alpha) {
 
 void SceneRenderer::draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame& audio,
                          const Variation& variation, float elapsedSeconds, float deltaSeconds,
-                         float baseHue, const std::string& patchJson, const ImageStore* images) {
-  static_cast<void>(deltaSeconds);
-  canvas.clear({0, 0, 0, 255});
+                         float baseHue, const std::string& patchJson, const ImageStore* images,
+                         Background background, const std::string& previousPatchJson,
+                         PatchTransitionProgress transition) {
+  const std::uint8_t backgroundAlpha = background == Background::Transparent ? 0U : 255U;
+  canvas.clear({0, 0, 0, backgroundAlpha});
   const float hue = wrapHue(baseHue + variation.hueOffset);
   switch (scene) {
   case SceneId::Bars:
@@ -131,9 +298,67 @@ void SceneRenderer::draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame
   case SceneId::Aurora:
     drawAurora(canvas, audio, variation, elapsedSeconds, hue);
     break;
-  case SceneId::SemanticSynth:
-    drawSemanticSynth(canvas, audio, variation, elapsedSeconds, hue, patchJson, images);
+  case SceneId::SemanticSynth: {
+    const float clampedProgress = std::clamp(transition.topology, 0.0F, 1.0F);
+    const bool hasPreviousPatch = !previousPatchJson.empty() && previousPatchJson != patchJson;
+    const bool crossfadesPatch = hasPreviousPatch && transition.usesDecks && clampedProgress < 1.0F;
+    if (crossfadesPatch) {
+      const bool startsNewDeckPair =
+          topologyOutgoingRenderer_ == nullptr || topologyIncomingRenderer_ == nullptr ||
+          topologyOutgoingPatch_ != previousPatchJson || topologyIncomingPatch_ != patchJson;
+      if (startsNewDeckPair) {
+        topologyOutgoingRenderer_ = std::make_shared<SceneRenderer>(*this);
+        topologyOutgoingRenderer_->topologyOutgoingRenderer_.reset();
+        topologyOutgoingRenderer_->topologyIncomingRenderer_.reset();
+        topologyIncomingRenderer_ = std::make_shared<SceneRenderer>();
+        topologyOutgoingPatch_ = previousPatchJson;
+        topologyIncomingPatch_ = patchJson;
+      }
+      OpacityCanvas outgoing(canvas, 1.0F - clampedProgress);
+      topologyOutgoingRenderer_->drawSemanticSynth(outgoing, audio, variation, elapsedSeconds,
+                                                   deltaSeconds, hue, previousPatchJson, images);
+      OpacityCanvas incoming(canvas, clampedProgress);
+      topologyIncomingRenderer_->drawSemanticSynth(incoming, audio, variation, elapsedSeconds,
+                                                   deltaSeconds, hue, patchJson, images);
+    } else {
+      topologyOutgoingRenderer_.reset();
+      topologyIncomingRenderer_.reset();
+      topologyOutgoingPatch_.clear();
+      topologyIncomingPatch_.clear();
+      const bool interpolatesAttributes =
+          hasPreviousPatch && !transition.usesDecks &&
+          (transition.palette < 1.0F || transition.parameter < 1.0F ||
+           transition.modulation < 1.0F);
+      if (interpolatesAttributes) {
+        SceneRenderer previousRenderer;
+        const bool retargetsRenderedPatch = hasRenderedSemanticState_ &&
+                                            compiledPatchJson_ == previousPatchJson &&
+                                            patchJson != compiledPatchJson_;
+        if (retargetsRenderedPatch) {
+          previousRenderer = *this;
+          previousRenderer.semanticParameterSignal_ = renderedSemanticParameterSignal_;
+          previousRenderer.semanticDiscreteParameterHash_ = renderedSemanticDiscreteParameterHash_;
+          previousRenderer.semanticPaletteMode_ = renderedSemanticPaletteMode_;
+          previousRenderer.semanticPaletteHue_ = renderedSemanticPaletteHue_;
+          previousRenderer.semanticPaletteSaturation_ = renderedSemanticPaletteSaturation_;
+          previousRenderer.semanticPaletteLightness_ = renderedSemanticPaletteLightness_;
+          previousRenderer.semanticCompositionSymmetry_ = renderedSemanticCompositionSymmetry_;
+          previousRenderer.semanticCompositionScale_ = renderedSemanticCompositionScale_;
+          previousRenderer.semanticCompositionSpeed_ = renderedSemanticCompositionSpeed_;
+          previousRenderer.hasFrozenSemanticRouteOffsets_ = true;
+          previousRenderer.frozenSemanticRouteOffsets_ = renderedSemanticRouteOffsets_;
+        } else {
+          previousRenderer.compileSemanticPatch(previousPatchJson);
+        }
+        drawSemanticSynth(canvas, audio, variation, elapsedSeconds, deltaSeconds, hue, patchJson,
+                          images, &previousRenderer, transition);
+      } else {
+        drawSemanticSynth(canvas, audio, variation, elapsedSeconds, deltaSeconds, hue, patchJson,
+                          images);
+      }
+    }
     break;
+  }
   }
 }
 
@@ -329,18 +554,43 @@ void SceneRenderer::drawLissajous(Canvas& canvas, const AnalyzedAudioFrame& audi
 
 void SceneRenderer::drawFluid(Canvas& canvas, const AnalyzedAudioFrame& audio,
                               const Variation& variation, float elapsedSeconds, float hue) {
-  const int spacing = variation.variant == 2 ? 16 : 22;
+  const bool usesEdgeJets = variation.variant == 1;
+  const bool usesMandala = variation.variant == 2;
+  const bool usesRibbon = variation.variant == 3;
+  const int spacing = usesMandala ? 16 : 22;
   for (int y = -spacing; y < canvas.height() + spacing; y += spacing) {
     for (int x = -spacing; x < canvas.width() + spacing; x += spacing) {
       const float wave = std::sin(x * 0.035F + elapsedSeconds * variation.speed) +
                          std::cos(y * 0.04F - elapsedSeconds * 0.7F);
       const float warp = wave * (8.0F + audio.bass * 16.0F);
-      const int drawX = x + scaled(std::sin(y * 0.03F + elapsedSeconds) * warp);
-      const int drawY = y + scaled(std::cos(x * 0.03F - elapsedSeconds) * warp);
+      int drawX = x + scaled(std::sin(y * 0.03F + elapsedSeconds) * warp);
+      int drawY = y + scaled(std::cos(x * 0.03F - elapsedSeconds) * warp);
+      if (usesEdgeJets) {
+        const bool comesFromLeft = ((x / spacing) & 1) == 0;
+        const int edge = comesFromLeft ? 0 : canvas.width();
+        drawX = edge + (comesFromLeft ? 1 : -1) * scaled((y + spacing) * 0.45F + warp);
+      } else if (usesMandala) {
+        const float centeredX = static_cast<float>(drawX - canvas.width() / 2);
+        const float centeredY = static_cast<float>(drawY - canvas.height() / 2);
+        const float radius = std::sqrt(centeredX * centeredX + centeredY * centeredY);
+        const float angle = std::atan2(centeredY, centeredX);
+        const float folded = std::fmod(std::abs(angle), kPi / 3.0F);
+        drawX = canvas.width() / 2 + scaled(std::cos(folded) * radius);
+        drawY = canvas.height() / 2 + scaled(std::sin(folded) * radius);
+      } else if (usesRibbon) {
+        const float band = static_cast<float>(y + spacing) / spacing;
+        drawY = canvas.height() / 2 +
+                scaled(std::sin(x * 0.035F + elapsedSeconds + band) * (18.0F + band * 3.0F));
+      }
       const float normalized = clampUnit((wave + 2.0F) * 0.25F);
       const Color color =
           sceneColor(variation, hue, normalized * variation.hueSpread, 35.0F + normalized * 34.0F);
-      canvas.circle(drawX, drawY, scaled(5.0F + normalized * 9.0F), color, true);
+      const int radius = scaled(5.0F + normalized * 9.0F);
+      if (usesRibbon) {
+        canvas.rectangle(drawX - radius, drawY - radius / 2, radius * 2, radius, color, true);
+      } else {
+        canvas.circle(drawX, drawY, radius, color, true);
+      }
     }
   }
 }
@@ -451,8 +701,18 @@ void SceneRenderer::compileSemanticPatch(const std::string& patchJson) {
   fieldHashes_.clear();
   modifierHashes_.clear();
   materialHashes_.clear();
-  semanticGraphHash_ = fnv1a(patchJson);
-  semanticImageHash_.clear();
+  semanticGraphHash_ = 2166136261U;
+  semanticDiscreteParameterHash_ = 2166136261U;
+  semanticParameterSignal_ = 0.0F;
+  semanticPaletteMode_ = 0;
+  semanticPaletteHue_ = 0.0F;
+  semanticPaletteSaturation_ = 75.0F;
+  semanticPaletteLightness_ = 50.0F;
+  semanticCompositionSymmetry_ = 4.0F;
+  semanticCompositionScale_ = 1.0F;
+  semanticCompositionSpeed_ = 1.0F;
+  semanticImageHashes_.clear();
+  semanticRoutes_.clear();
   usesImageSource_ = false;
 
   std::size_t position = 0;
@@ -481,6 +741,8 @@ void SceneRenderer::compileSemanticPatch(const std::string& patchJson) {
         continue;
       }
       const std::uint32_t hash = fnv1a(generatorId);
+      semanticGraphHash_ ^= hash;
+      semanticGraphHash_ *= 16777619U;
       const bool isImageSource = generatorId == "stamp";
       usesImageSource_ = usesImageSource_ || isImageSource;
       const std::string category = definition.category;
@@ -501,29 +763,281 @@ void SceneRenderer::compileSemanticPatch(const std::string& patchJson) {
     position = endQuote + 1;
   }
 
+  position = 0;
+  constexpr const char* kParametersKey = "\"parameters\"";
+  std::uint32_t parameterIndex = 1U;
+  while (position < patchJson.size()) {
+    const std::size_t key = patchJson.find(kParametersKey, position);
+    const bool hasParameters = key != std::string::npos;
+    if (!hasParameters) {
+      break;
+    }
+    const std::size_t objectStart = patchJson.find('{', key);
+    const bool hasObject = objectStart != std::string::npos;
+    if (!hasObject) {
+      break;
+    }
+    const std::size_t objectEnd = flatObjectEnd(patchJson, objectStart);
+    std::size_t valuePosition = objectStart + 1U;
+    while (valuePosition < objectEnd) {
+      const std::size_t colon = patchJson.find(':', valuePosition);
+      const bool hasValue = colon != std::string::npos && colon < objectEnd;
+      if (!hasValue) {
+        break;
+      }
+      const char* start = patchJson.c_str() + colon + 1U;
+      char* end = nullptr;
+      const float value = std::strtof(start, &end);
+      const bool isNumeric =
+          end != start && static_cast<std::size_t>(end - patchJson.c_str()) <= objectEnd;
+      if (isNumeric) {
+        const float weight = 0.25F + hashUnit(parameterIndex * 0x9E3779B9U) * 0.75F;
+        semanticParameterSignal_ += value * weight;
+      } else {
+        const std::size_t tokenEnd = patchJson.find_first_of(",}", colon + 1U);
+        const bool hasToken = tokenEnd != std::string::npos && tokenEnd <= objectEnd;
+        if (hasToken) {
+          semanticDiscreteParameterHash_ ^=
+              fnv1a(patchJson.substr(colon + 1U, tokenEnd - colon - 1U));
+          semanticDiscreteParameterHash_ *= 16777619U;
+        }
+      }
+      ++parameterIndex;
+      const std::size_t comma = patchJson.find(',', colon + 1U);
+      const bool hasMore = comma != std::string::npos && comma < objectEnd;
+      valuePosition = hasMore ? comma + 1U : objectEnd;
+    }
+    position = objectEnd + 1U;
+  }
+
+  const std::size_t paletteStart = patchJson.find("\"palette\"");
+  const bool hasPalette = paletteStart != std::string::npos;
+  if (hasPalette) {
+    const std::size_t paletteEnd = flatObjectEnd(patchJson, paletteStart);
+    const std::string mode =
+        stringAfterKey(patchJson, "mode", paletteStart, paletteEnd).value_or("mono");
+    const bool usesAnalogous = mode == "analogous";
+    const bool usesComplementary = mode == "complementary";
+    const bool usesTriadic = mode == "triadic";
+    const bool usesRainbow = mode == "rainbow";
+    semanticPaletteMode_ = usesAnalogous       ? 1
+                           : usesComplementary ? 2
+                           : usesTriadic       ? 3
+                           : usesRainbow       ? 4
+                                               : 0;
+    semanticPaletteHue_ =
+        numberAfterKey(patchJson, "hueOffset", paletteStart, paletteEnd).value_or(0.0F);
+    semanticPaletteSaturation_ =
+        numberAfterKey(patchJson, "saturation", paletteStart, paletteEnd).value_or(75.0F);
+    semanticPaletteLightness_ =
+        numberAfterKey(patchJson, "lightness", paletteStart, paletteEnd).value_or(50.0F);
+  }
+
+  const std::size_t compositionStart = patchJson.find("\"composition\"");
+  const bool hasComposition = compositionStart != std::string::npos;
+  if (hasComposition) {
+    const std::size_t compositionEnd = flatObjectEnd(patchJson, compositionStart);
+    semanticCompositionSymmetry_ =
+        numberAfterKey(patchJson, "symmetry", compositionStart, compositionEnd).value_or(4.0F);
+    semanticCompositionScale_ =
+        numberAfterKey(patchJson, "scale", compositionStart, compositionEnd).value_or(1.0F);
+    semanticCompositionSpeed_ =
+        numberAfterKey(patchJson, "speed", compositionStart, compositionEnd).value_or(1.0F);
+  }
+
   constexpr const char* kHashKey = "\"hash\"";
-  const std::size_t hashKey = patchJson.find(kHashKey);
-  const std::size_t hashColon =
-      hashKey == std::string::npos ? std::string::npos : patchJson.find(':', hashKey + 6U);
-  const std::size_t hashQuote =
-      hashColon == std::string::npos ? std::string::npos : patchJson.find('"', hashColon + 1U);
-  const std::size_t hashEnd =
-      hashQuote == std::string::npos ? std::string::npos : patchJson.find('"', hashQuote + 1U);
-  const bool hasImageHash = hashQuote != std::string::npos && hashEnd != std::string::npos;
-  if (hasImageHash) {
-    semanticImageHash_ = patchJson.substr(hashQuote + 1U, hashEnd - hashQuote - 1U);
+  position = 0;
+  while (position < patchJson.size()) {
+    const std::size_t hashKey = patchJson.find(kHashKey, position);
+    const bool hasHashKey = hashKey != std::string::npos;
+    if (!hasHashKey) {
+      break;
+    }
+    const std::size_t hashColon = patchJson.find(':', hashKey + 6U);
+    const std::size_t hashQuote =
+        hashColon == std::string::npos ? std::string::npos : patchJson.find('"', hashColon + 1U);
+    const std::size_t hashEnd =
+        hashQuote == std::string::npos ? std::string::npos : patchJson.find('"', hashQuote + 1U);
+    const bool hasImageHash = hashQuote != std::string::npos && hashEnd != std::string::npos;
+    if (!hasImageHash) {
+      break;
+    }
+    semanticImageHashes_.push_back(patchJson.substr(hashQuote + 1U, hashEnd - hashQuote - 1U));
+    position = hashEnd + 1U;
+  }
+
+  position = 0;
+  constexpr const char* kSourceKey = "\"source\"";
+  while (position < patchJson.size()) {
+    const std::size_t sourceKey = patchJson.find(kSourceKey, position);
+    const bool hasSourceKey = sourceKey != std::string::npos;
+    if (!hasSourceKey) {
+      break;
+    }
+    const std::size_t routeEnd = patchJson.find('}', sourceKey);
+    const bool hasRouteEnd = routeEnd != std::string::npos;
+    if (!hasRouteEnd) {
+      break;
+    }
+    const auto source = stringAfterKey(patchJson, "source", sourceKey, routeEnd);
+    const auto target = stringAfterKey(patchJson, "target", sourceKey, routeEnd);
+    const auto amount = numberAfterKey(patchJson, "amount", sourceKey, routeEnd);
+    const auto polarity = stringAfterKey(patchJson, "polarity", sourceKey, routeEnd);
+    const auto smoothing = numberAfterKey(patchJson, "smoothing", sourceKey, routeEnd);
+    const bool hasRoute = source.has_value() && target.has_value() && amount.has_value() &&
+                          polarity.has_value() && smoothing.has_value();
+    if (hasRoute) {
+      semanticRoutes_.push_back(
+          {*source, *target, *amount, *smoothing, 0.0F, *polarity == "bipolar"});
+    }
+    position = routeEnd + 1U;
   }
 }
 
 void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& audio,
-                                      const Variation& variation, float elapsedSeconds, float hue,
-                                      const std::string& patchJson, const ImageStore* images) {
+                                      const Variation& variation, float elapsedSeconds,
+                                      float deltaSeconds, float hue, const std::string& patchJson,
+                                      const ImageStore* images, const SceneRenderer* previousPatch,
+                                      PatchTransitionProgress transition) {
   compileSemanticPatch(patchJson);
-  const ImageAsset* imageAsset =
-      images == nullptr || semanticImageHash_.empty() ? nullptr : images->get(semanticImageHash_);
-  const bool drawsImage = usesImageSource_ && imageAsset != nullptr;
+  for (SemanticRouteState& route : semanticRoutes_) {
+    const float raw = semanticRouteSource(route.source, audio, elapsedSeconds);
+    const bool bypassesSmoothing = route.smoothing <= 0.0F;
+    const float blend =
+        bypassesSmoothing
+            ? 1.0F
+            : 1.0F - std::exp(-std::max(0.0F, deltaSeconds) / std::max(0.0001F, route.smoothing));
+    route.smoothed += (raw - route.smoothed) * blend;
+  }
+  const bool hasPreviousPatch = previousPatch != nullptr;
+  std::array<float, 4> routeOffsets{};
+  const auto addRoute = [&](const SemanticRouteState& route, float value, float amount) {
+    const float polarized = route.bipolar ? value * 2.0F - 1.0F : value;
+    const std::size_t bucket = fnv1a(route.target) % routeOffsets.size();
+    routeOffsets[bucket] += polarized * amount;
+  };
+  if (!hasPreviousPatch) {
+    for (const SemanticRouteState& route : semanticRoutes_) {
+      addRoute(route, route.smoothed, route.amount);
+    }
+  } else if (previousPatch->hasFrozenSemanticRouteOffsets_) {
+    for (const SemanticRouteState& route : semanticRoutes_) {
+      addRoute(route, route.smoothed, route.amount);
+    }
+    for (std::size_t index = 0; index < routeOffsets.size(); ++index) {
+      routeOffsets[index] = lerp(previousPatch->frozenSemanticRouteOffsets_[index],
+                                 routeOffsets[index], transition.modulation);
+    }
+  } else {
+    for (const SemanticRouteState& outgoing : previousPatch->semanticRoutes_) {
+      const auto incoming =
+          std::find_if(semanticRoutes_.begin(), semanticRoutes_.end(),
+                       [&outgoing](const SemanticRouteState& route) {
+                         return route.source == outgoing.source && route.target == outgoing.target;
+                       });
+      const bool hasIncomingRoute = incoming != semanticRoutes_.end();
+      if (hasIncomingRoute) {
+        const bool usesOutgoingDiscreteFields = transition.modulation < 0.5F;
+        const SemanticRouteState& discreteRoute = usesOutgoingDiscreteFields ? outgoing : *incoming;
+        const float raw = semanticRouteSource(discreteRoute.source, audio, elapsedSeconds);
+        const float value = usesOutgoingDiscreteFields ? raw : incoming->smoothed;
+        const float amount = lerp(outgoing.amount, incoming->amount, transition.modulation);
+        addRoute(discreteRoute, value, amount);
+      } else {
+        const float raw = semanticRouteSource(outgoing.source, audio, elapsedSeconds);
+        addRoute(outgoing, raw, outgoing.amount * (1.0F - transition.modulation));
+      }
+    }
+    for (const SemanticRouteState& incoming : semanticRoutes_) {
+      const auto outgoing =
+          std::find_if(previousPatch->semanticRoutes_.begin(), previousPatch->semanticRoutes_.end(),
+                       [&incoming](const SemanticRouteState& route) {
+                         return route.source == incoming.source && route.target == incoming.target;
+                       });
+      const bool isAddedRoute = outgoing == previousPatch->semanticRoutes_.end();
+      if (isAddedRoute) {
+        addRoute(incoming, incoming.smoothed, incoming.amount * transition.modulation);
+      }
+    }
+  }
+  const float parameterSignal = hasPreviousPatch
+                                    ? lerp(previousPatch->semanticParameterSignal_,
+                                           semanticParameterSignal_, transition.parameter)
+                                    : semanticParameterSignal_;
+  const float paletteHue = hasPreviousPatch ? lerpHue(previousPatch->semanticPaletteHue_,
+                                                      semanticPaletteHue_, transition.palette)
+                                            : semanticPaletteHue_;
+  const float paletteSaturation = hasPreviousPatch
+                                      ? lerp(previousPatch->semanticPaletteSaturation_,
+                                             semanticPaletteSaturation_, transition.palette)
+                                      : semanticPaletteSaturation_;
+  const float paletteLightness = hasPreviousPatch
+                                     ? lerp(previousPatch->semanticPaletteLightness_,
+                                            semanticPaletteLightness_, transition.palette)
+                                     : semanticPaletteLightness_;
+  const float compositionSymmetry = hasPreviousPatch
+                                        ? lerp(previousPatch->semanticCompositionSymmetry_,
+                                               semanticCompositionSymmetry_, transition.parameter)
+                                        : semanticCompositionSymmetry_;
+  const float compositionScale = hasPreviousPatch
+                                     ? lerp(previousPatch->semanticCompositionScale_,
+                                            semanticCompositionScale_, transition.parameter)
+                                     : semanticCompositionScale_;
+  const float compositionSpeed = hasPreviousPatch
+                                     ? lerp(previousPatch->semanticCompositionSpeed_,
+                                            semanticCompositionSpeed_, transition.parameter)
+                                     : semanticCompositionSpeed_;
+  const bool usesOutgoingDiscreteParameters = hasPreviousPatch && transition.parameter < 0.5F;
+  const std::uint32_t discreteParameterHash = usesOutgoingDiscreteParameters
+                                                  ? previousPatch->semanticDiscreteParameterHash_
+                                                  : semanticDiscreteParameterHash_;
+  const bool usesOutgoingPaletteMode = hasPreviousPatch && transition.palette < 0.5F;
+  const int paletteMode =
+      usesOutgoingPaletteMode ? previousPatch->semanticPaletteMode_ : semanticPaletteMode_;
+  const float parameterPhase = std::fmod(std::abs(parameterSignal), 31.0F) / 31.0F;
+  const float graphHueOffset = hashUnit(semanticGraphHash_ ^ discreteParameterHash) * 360.0F;
+  hasRenderedSemanticState_ = true;
+  renderedSemanticParameterSignal_ = parameterSignal;
+  renderedSemanticDiscreteParameterHash_ = discreteParameterHash;
+  renderedSemanticPaletteMode_ = paletteMode;
+  renderedSemanticPaletteHue_ = paletteHue;
+  renderedSemanticPaletteSaturation_ = paletteSaturation;
+  renderedSemanticPaletteLightness_ = paletteLightness;
+  renderedSemanticCompositionSymmetry_ = compositionSymmetry;
+  renderedSemanticCompositionScale_ = compositionScale;
+  renderedSemanticCompositionSpeed_ = compositionSpeed;
+  renderedSemanticRouteOffsets_ = routeOffsets;
+  const auto semanticColor = [&](float offset, float lightness, std::uint8_t alpha = 255U) {
+    const float adjustedLightness =
+        std::clamp(lightness + (paletteLightness - 50.0F) * 0.35F, 0.0F, 100.0F);
+    return hsl(hue + paletteHue + graphHueOffset + offset, paletteSaturation, adjustedLightness,
+               alpha);
+  };
+  std::vector<const ImageAsset*> imageAssets;
+  const bool canResolveImages = usesImageSource_ && images != nullptr;
+  if (canResolveImages) {
+    for (const std::string& hash : semanticImageHashes_) {
+      const ImageAsset* asset = images->get(hash);
+      const bool hasAsset = asset != nullptr;
+      if (hasAsset) {
+        imageAssets.push_back(asset);
+      }
+    }
+  }
+  const bool drawsImage = !imageAssets.empty();
   if (drawsImage) {
-    canvas.image(*imageAsset, 0, 0, canvas.width(), canvas.height());
+    const int columns = std::max(1, static_cast<int>(std::ceil(std::sqrt(imageAssets.size()))));
+    const int rows =
+        std::max(1, static_cast<int>((imageAssets.size() + static_cast<std::size_t>(columns) - 1U) /
+                                     static_cast<std::size_t>(columns)));
+    const int imageWidth = canvas.width() / columns;
+    const int imageHeight = canvas.height() / rows;
+    for (std::size_t index = 0; index < imageAssets.size(); ++index) {
+      const int column = static_cast<int>(index % static_cast<std::size_t>(columns));
+      const int row = static_cast<int>(index / static_cast<std::size_t>(columns));
+      canvas.image(*imageAssets[index], column * imageWidth, row * imageHeight, imageWidth,
+                   imageHeight);
+    }
   }
   const std::uint32_t sourceHash =
       sourceHashes_.empty() ? semanticGraphHash_ : sourceHashes_.front();
@@ -537,8 +1051,9 @@ void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& 
   const int fieldMode = static_cast<int>(fieldHash % 4U);
   const int modifierMode = static_cast<int>(modifierHash % 5U);
   const int materialMode = static_cast<int>(materialHash % 5U);
-  const int densityOffset = static_cast<int>((semanticGraphHash_ >> 8U) % 5U);
-  const int cells = std::clamp(variation.symmetry * 2 + densityOffset, 5, 18);
+  const int densityOffset = static_cast<int>(std::round(parameterPhase * 4.0F));
+  const int cells =
+      std::clamp(static_cast<int>(std::round(compositionSymmetry)) * 2 + densityOffset, 5, 18);
   const float cellWidth = static_cast<float>(canvas.width()) / cells;
   const float cellHeight = static_cast<float>(canvas.height()) / cells;
   for (int y = 0; y < cells; ++y) {
@@ -547,7 +1062,8 @@ void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& 
       const float random = hashUnit(semanticGraphHash_ ^ index * 0x9E3779B9U);
       float unitX = (x + 0.5F) / cells - 0.5F;
       float unitY = (y + 0.5F) / cells - 0.5F;
-      const float fieldPhase = elapsedSeconds * variation.speed + audio.mid * kPi;
+      const float fieldPhase = elapsedSeconds * (compositionSpeed + routeOffsets[1] * 0.1F) +
+                               audio.mid * kPi + routeOffsets[2] + parameterPhase * kPi;
       if (fieldMode == 0) {
         unitX += std::sin(unitY * 12.0F + fieldPhase) * (0.03F + audio.bass * 0.08F);
       } else if (fieldMode == 1) {
@@ -571,7 +1087,7 @@ void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& 
         unitY = std::abs(unitY);
       }
       const float oscillator =
-          0.5F + 0.5F * std::sin(elapsedSeconds * variation.speed * (1.0F + random * 3.0F) +
+          0.5F + 0.5F * std::sin(elapsedSeconds * compositionSpeed * (1.0F + random * 3.0F) +
                                  (unitX + unitY) * 14.0F + audio.tempo.barPhase * kPi);
       float sourceValue = oscillator;
       if (sourceMode == 0) {
@@ -586,19 +1102,28 @@ void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& 
         sourceValue = random;
       }
       const float imageMix = drawsImage ? 0.32F : 1.0F;
-      const float modulation = clampUnit(sourceValue * 0.55F * imageMix + audio.bass * 0.3F +
-                                         audio.treble * random * 0.25F);
+      const float modulation =
+          clampUnit(sourceValue * (0.55F + routeOffsets[0] * 0.08F) * imageMix + audio.bass * 0.3F +
+                    audio.treble * random * 0.25F + routeOffsets[3] * 0.1F);
       const float materialHue = materialMode == 0   ? random * variation.hueSpread
                                 : materialMode == 1 ? unitX * 180.0F
                                 : materialMode == 2 ? unitY * 220.0F
                                 : materialMode == 3 ? oscillator * 300.0F
                                                     : (unitX + unitY) * 180.0F;
+      const float paletteMaterialHue =
+          paletteMode == 0   ? 0.0F
+          : paletteMode == 1 ? std::fmod(materialHue + 30.0F, 60.0F) - 30.0F
+          : paletteMode == 2 ? (materialHue >= 0.0F ? 180.0F : 0.0F)
+          : paletteMode == 3 ? std::round(materialHue / 120.0F) * 120.0F
+                             : materialHue;
       const float materialLightness =
           materialMode == 4 ? 28.0F + (1.0F - modulation) * 52.0F : 18.0F + modulation * 62.0F;
-      const Color color = sceneColor(variation, hue, materialHue, materialLightness);
+      const Color color =
+          semanticColor(paletteMaterialHue + routeOffsets[2] * 45.0F, materialLightness);
       const int centerX = scaled((unitX + 0.5F) * canvas.width());
       const int centerY = scaled((unitY + 0.5F) * canvas.height());
-      const int radius = std::max(1, scaled(std::min(cellWidth, cellHeight) * 0.48F * modulation));
+      const int radius = std::max(
+          1, scaled(std::min(cellWidth, cellHeight) * 0.48F * modulation * compositionScale));
       const bool useCircle = (modifierMode + sourceMode + x + y) % 2 == 0;
       if (useCircle) {
         canvas.circle(centerX, centerY, radius, color, modifierMode != 4);
@@ -612,7 +1137,7 @@ void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& 
                                 ? "SYNTH"
                                 : "SYNTH " + std::to_string(sourceHashes_.size()) + "/" +
                                       std::to_string(modifierHashes_.size());
-  canvas.text(4, 4, label, sceneColor(variation, hue, 0.0F, 85.0F));
+  canvas.text(4, 4, label, semanticColor(0.0F, 85.0F));
 }
 
 } // namespace stackchan

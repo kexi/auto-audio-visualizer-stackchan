@@ -27,6 +27,9 @@ const AUDIO_SOURCES = new Set([
   'audio:treble',
   'audio:level',
   'audio:beat',
+  'audio:beatIntensity',
+  'audio:gridPulse',
+  'audio:barPulse',
   'audio:barPhase',
   'audio:beatPhase',
 ]);

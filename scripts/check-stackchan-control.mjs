@@ -70,3 +70,27 @@ const imagePatch = byId.get(17)?.result?.currentPatch;
 if (imagePatch?.images?.['src0.image']?.hash !== imageResult.hash) {
   throw new Error('image Patch was not applied');
 }
+
+const settingsResult = byId.get(19)?.result?.settings;
+const hasSanitizedSettings =
+  settingsResult?.gain === 4 &&
+  settingsResult?.hueMode === 'fixed' &&
+  settingsResult?.fixedHue === 360 &&
+  settingsResult?.background === 'transparent' &&
+  settingsResult?.cycleMode === 'bars' &&
+  settingsResult?.cycleBars === 256 &&
+  settingsResult?.gachaBars === 1;
+if (!hasSanitizedSettings) {
+  throw new Error('setSettings did not apply and sanitize the CoreS3 settings');
+}
+
+const jpegResult = byId.get(20)?.result;
+const hasJpeg =
+  jpegResult?.ok === true &&
+  jpegResult.name === 'pixel.jpg' &&
+  jpegResult.hash === 'c158ec5886006afa0f5122e5c9e7aa8e0433aed6b74fa818d87b438e6652abf0';
+const hasAppliedJpeg = byId.get(21)?.result?.ok === true;
+const hasWorkingJpegPatch = hasJpeg && hasAppliedJpeg;
+if (!hasWorkingJpegPatch) {
+  throw new Error('JPEG image was not decoded and applied');
+}

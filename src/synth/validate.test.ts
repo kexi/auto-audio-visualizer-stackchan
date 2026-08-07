@@ -596,6 +596,27 @@ describe('synth/validate', () => {
             polarity: 'unipolar',
             smoothing: 0,
           },
+          {
+            source: 'audio:beatIntensity',
+            target: 'mod.amount',
+            amount: 0.5,
+            polarity: 'unipolar',
+            smoothing: 0,
+          },
+          {
+            source: 'audio:gridPulse',
+            target: 'src.amount',
+            amount: 0.5,
+            polarity: 'unipolar',
+            smoothing: 0,
+          },
+          {
+            source: 'audio:barPulse',
+            target: 'mod.count',
+            amount: 0.5,
+            polarity: 'unipolar',
+            smoothing: 0,
+          },
         ],
       });
       expect(codes(patch)).not.toContain('invalid_source');

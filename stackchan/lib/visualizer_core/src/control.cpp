@@ -500,10 +500,15 @@ std::string escapeJson(const std::string& value) {
 }
 
 ControlMethod methodFromName(const std::string& name) {
-  constexpr std::array<std::pair<const char*, ControlMethod>, 16> kMethods = {{
+  constexpr std::array<std::pair<const char*, ControlMethod>, 21> kMethods = {{
       {"getState", ControlMethod::GetState},
       {"getCatalog", ControlMethod::GetCatalog},
+      {"setSettings", ControlMethod::SetSettings},
       {"setImage", ControlMethod::SetImage},
+      {"beginImageUpload", ControlMethod::BeginImageUpload},
+      {"appendImageUpload", ControlMethod::AppendImageUpload},
+      {"commitImageUpload", ControlMethod::CommitImageUpload},
+      {"cancelImageUpload", ControlMethod::CancelImageUpload},
       {"proposePatch", ControlMethod::ProposePatch},
       {"proposeSeed", ControlMethod::ProposeSeed},
       {"setScene", ControlMethod::SetScene},
@@ -658,6 +663,12 @@ std::optional<SemanticIntent> parseIntent(const std::string& json, JsonView obje
       return std::nullopt;
     }
     intent.patchJson = json.substr(patch->begin, patch->end - patch->begin);
+    const auto patchSeed = stringProperty(json, *patch, "seed");
+    const bool hasPatchSeed = patchSeed.has_value();
+    if (!hasPatchSeed) {
+      return std::nullopt;
+    }
+    intent.seed = *patchSeed;
   }
   return intent;
 }
@@ -969,6 +980,140 @@ std::optional<bool> booleanValue(const std::string& json, JsonView view) {
   return isFalse ? std::optional<bool>{false} : std::nullopt;
 }
 
+struct ParsedSettingsPatch {
+  bool ok = false;
+  SettingsPatch patch{};
+  std::string issue;
+};
+
+ParsedSettingsPatch parseSettingsPatch(const std::string& json, JsonView object) {
+  ParsedSettingsPatch parsed{};
+  const auto members = objectMembers(json, object);
+  const bool hasMembers = members.has_value() && !members->empty();
+  if (!hasMembers) {
+    parsed.issue = "setSettings params must be a non-empty object";
+    return parsed;
+  }
+  std::vector<std::string> seen;
+  for (const auto& [key, value] : *members) {
+    const bool isDuplicate = std::find(seen.begin(), seen.end(), key) != seen.end();
+    if (isDuplicate) {
+      parsed.issue = "setSettings contains duplicate field: " + key;
+      return parsed;
+    }
+    seen.push_back(key);
+
+    const bool setsScene = key == "scene";
+    const bool setsFloat = key == "gain" || key == "fixedHue" || key == "cycleSeconds";
+    const bool setsInteger = key == "cycleBars" || key == "gachaBars";
+    const bool setsBoolean = key == "autoCycle" || key == "autoGacha";
+    const bool setsText =
+        key == "hueMode" || key == "background" || key == "cycleMode" || key == "seed";
+    if (setsScene) {
+      const auto scene = decodeString(json, value);
+      const bool hasKnownScene =
+          scene.has_value() && (*scene == "bars" || sceneFromId(*scene) != SceneId::Bars);
+      if (!hasKnownScene) {
+        parsed.issue = "settings.scene is unknown";
+        return parsed;
+      }
+      parsed.patch.scene = sceneFromId(*scene);
+      continue;
+    }
+    if (setsFloat) {
+      const auto number = numberValue(json, value);
+      const bool hasNumber = number.has_value();
+      if (!hasNumber) {
+        parsed.issue = "settings." + key + " must be finite";
+        return parsed;
+      }
+      const bool setsGain = key == "gain";
+      const bool setsFixedHue = key == "fixedHue";
+      if (setsGain) {
+        parsed.patch.gain = static_cast<float>(std::clamp(*number, 0.5, 4.0));
+      } else if (setsFixedHue) {
+        parsed.patch.fixedHue = static_cast<float>(std::clamp(*number, 0.0, 360.0));
+      } else {
+        parsed.patch.cycleSeconds = static_cast<float>(std::clamp(*number, 2.0, 600.0));
+      }
+      continue;
+    }
+    if (setsInteger) {
+      const auto number = numberValue(json, value);
+      const bool hasNumber = number.has_value();
+      if (!hasNumber) {
+        parsed.issue = "settings." + key + " must be finite";
+        return parsed;
+      }
+      const bool setsCycleBars = key == "cycleBars";
+      if (setsCycleBars) {
+        const double clamped = std::clamp(std::round(*number), 1.0, 256.0);
+        parsed.patch.cycleBars = static_cast<std::uint16_t>(clamped);
+      } else {
+        const double clamped = std::clamp(std::round(*number), 1.0, 512.0);
+        parsed.patch.gachaBars = static_cast<std::uint16_t>(clamped);
+      }
+      continue;
+    }
+    if (setsBoolean) {
+      const auto enabled = booleanValue(json, value);
+      const bool hasBoolean = enabled.has_value();
+      if (!hasBoolean) {
+        parsed.issue = "settings." + key + " must be boolean";
+        return parsed;
+      }
+      const bool setsAutoCycle = key == "autoCycle";
+      if (setsAutoCycle) {
+        parsed.patch.autoCycle = *enabled;
+      } else {
+        parsed.patch.autoGacha = *enabled;
+      }
+      continue;
+    }
+    if (setsText) {
+      const auto text = decodeString(json, value);
+      const bool hasText = text.has_value();
+      if (!hasText) {
+        parsed.issue = "settings." + key + " must be a string";
+        return parsed;
+      }
+      const bool setsHueMode = key == "hueMode";
+      const bool setsBackground = key == "background";
+      const bool setsCycleMode = key == "cycleMode";
+      if (setsHueMode) {
+        const bool isKnown = *text == "cycle" || *text == "fixed";
+        if (!isKnown) {
+          parsed.issue = "settings.hueMode must be cycle or fixed";
+          return parsed;
+        }
+        parsed.patch.hueMode = *text == "fixed" ? HueMode::Fixed : HueMode::Cycle;
+      } else if (setsBackground) {
+        const bool isKnown = *text == "black" || *text == "transparent";
+        if (!isKnown) {
+          parsed.issue = "settings.background must be black or transparent";
+          return parsed;
+        }
+        parsed.patch.background =
+            *text == "transparent" ? Background::Transparent : Background::Black;
+      } else if (setsCycleMode) {
+        const bool isKnown = *text == "seconds" || *text == "bars";
+        if (!isKnown) {
+          parsed.issue = "settings.cycleMode must be seconds or bars";
+          return parsed;
+        }
+        parsed.patch.cycleMode = *text == "bars" ? CycleMode::Bars : CycleMode::Seconds;
+      } else {
+        parsed.patch.seed = *text;
+      }
+      continue;
+    }
+    parsed.issue = "unknown settings field: " + key;
+    return parsed;
+  }
+  parsed.ok = true;
+  return parsed;
+}
+
 const GeneratedGeneratorDefinition* generatorDefinition(const std::string& id) {
   for (std::size_t index = 0; index < kGeneratorDefinitionCount; ++index) {
     const bool matches = id == kGeneratorDefinitions[index].id;
@@ -1275,9 +1420,18 @@ std::optional<std::string> visualPatchIssue(const std::string& json, JsonView pa
       return "route target parameter is not modulatable";
     }
 
-    constexpr std::array<const char*, 8> kKnownSources = {
-        "time",        "audio:bass", "audio:mid",      "audio:treble",
-        "audio:level", "audio:beat", "audio:barPhase", "audio:beatPhase",
+    constexpr std::array<const char*, 11> kKnownSources = {
+        "time",
+        "audio:bass",
+        "audio:mid",
+        "audio:treble",
+        "audio:level",
+        "audio:beat",
+        "audio:barPhase",
+        "audio:beatPhase",
+        "audio:beatIntensity",
+        "audio:gridPulse",
+        "audio:barPulse",
     };
     const bool isKnownSource =
         std::any_of(kKnownSources.begin(), kKnownSources.end(),
@@ -1294,6 +1448,9 @@ std::optional<std::string> visualPatchIssue(const std::string& json, JsonView pa
     const bool isSelfModulation = isOperatorSource && sourceOperatorId == targetParts->first;
     if (isSelfModulation) {
       return "an operator cannot modulate itself";
+    }
+    if (isOperatorSource) {
+      return "operator modulation sources are not supported yet";
     }
   }
 
@@ -1478,6 +1635,21 @@ ControlRequest parseControlRequest(const std::string& json) {
   }
 
   const auto params = objectProperty(json, *root, "params");
+  const bool setsSettings = request.method == ControlMethod::SetSettings;
+  if (setsSettings) {
+    const bool hasParamsObject = params.has_value() && isJsonObject(json, *params);
+    if (!hasParamsObject) {
+      request.issue = "setSettings params must be a non-empty object";
+      return request;
+    }
+    const auto settings = parseSettingsPatch(json, *params);
+    const bool hasValidSettings = settings.ok;
+    if (!hasValidSettings) {
+      request.issue = settings.issue;
+      return request;
+    }
+    request.settingsPatch = settings.patch;
+  }
   const bool needsSeed = request.method == ControlMethod::ProposeSeed;
   const bool needsScene = request.method == ControlMethod::SetScene;
   const bool needsExternalId = request.method == ControlMethod::FireExternal;
@@ -1581,6 +1753,41 @@ ControlRequest parseControlRequest(const std::string& json) {
     request.payload = *bytes;
   }
 
+  const bool beginsImageUpload = request.method == ControlMethod::BeginImageUpload;
+  if (beginsImageUpload) {
+    const auto name = params.has_value() ? stringProperty(json, *params, "name") : std::nullopt;
+    const auto mime = params.has_value() ? stringProperty(json, *params, "mime") : std::nullopt;
+    const auto byteLength =
+        params.has_value() ? numberProperty(json, *params, "byteLength") : std::nullopt;
+    const bool hasImageMetadata = name.has_value() && mime.has_value() && byteLength.has_value();
+    if (!hasImageMetadata) {
+      request.issue = "beginImageUpload requires name, mime, and byteLength in 1..5242880";
+      return request;
+    }
+    const double byteLengthValue = *byteLength;
+    const bool hasValidByteLength = std::floor(byteLengthValue) == byteLengthValue &&
+                                    byteLengthValue > 0.0 && byteLengthValue <= 5242880.0;
+    if (!hasValidByteLength) {
+      request.issue = "beginImageUpload requires name, mime, and byteLength in 1..5242880";
+      return request;
+    }
+    request.text = *name;
+    request.secondaryText = *mime;
+    request.number = static_cast<float>(byteLengthValue);
+  }
+
+  const bool appendsImageUpload = request.method == ControlMethod::AppendImageUpload;
+  if (appendsImageUpload) {
+    const auto chunk =
+        params.has_value() ? stringProperty(json, *params, "bytesBase64") : std::nullopt;
+    const bool hasChunk = chunk.has_value() && !chunk->empty();
+    if (!hasChunk) {
+      request.issue = "appendImageUpload requires non-empty bytesBase64";
+      return request;
+    }
+    request.payload = *chunk;
+  }
+
   const bool loadsRecording = request.method == ControlMethod::LoadRecording;
   if (loadsRecording) {
     const auto recording =
@@ -1639,6 +1846,7 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
                                    &timeline_,
                                    &scheduler_,
                                    &runtime_.patchJson(),
+                                   runtime_.qualityScale(),
                                    runtime_.variationTransitionActive(),
                                    recordingActive_,
                                    static_cast<double>(nowMs) / 1000.0};
@@ -1647,9 +1855,64 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
   case ControlMethod::GetCatalog:
     return {"{\"id\":" + std::to_string(request.id) + ",\"result\":" + kGeneratorCatalogJson + "}",
             false};
+  case ControlMethod::SetSettings: {
+    Settings settings = runtime_.settings();
+    const SettingsPatch& patch = request.settingsPatch;
+    const bool updatesScene = patch.scene.has_value();
+    const bool updatesGain = patch.gain.has_value();
+    const bool updatesHueMode = patch.hueMode.has_value();
+    const bool updatesFixedHue = patch.fixedHue.has_value();
+    const bool updatesBackground = patch.background.has_value();
+    const bool updatesAutoCycle = patch.autoCycle.has_value();
+    const bool updatesCycleSeconds = patch.cycleSeconds.has_value();
+    const bool updatesCycleMode = patch.cycleMode.has_value();
+    const bool updatesCycleBars = patch.cycleBars.has_value();
+    const bool updatesAutoGacha = patch.autoGacha.has_value();
+    const bool updatesGachaBars = patch.gachaBars.has_value();
+    const bool updatesSeed = patch.seed.has_value();
+    if (updatesScene) {
+      settings.scene = *patch.scene;
+    }
+    if (updatesGain) {
+      settings.gain = *patch.gain;
+    }
+    if (updatesHueMode) {
+      settings.hueMode = *patch.hueMode;
+    }
+    if (updatesFixedHue) {
+      settings.fixedHue = *patch.fixedHue;
+    }
+    if (updatesBackground) {
+      settings.background = *patch.background;
+    }
+    if (updatesAutoCycle) {
+      settings.autoCycle = *patch.autoCycle;
+    }
+    if (updatesCycleSeconds) {
+      settings.cycleSeconds = *patch.cycleSeconds;
+    }
+    if (updatesCycleMode) {
+      settings.cycleMode = *patch.cycleMode;
+    }
+    if (updatesCycleBars) {
+      settings.cycleBars = *patch.cycleBars;
+    }
+    if (updatesAutoGacha) {
+      settings.autoGacha = *patch.autoGacha;
+    }
+    if (updatesGachaBars) {
+      settings.gachaBars = *patch.gachaBars;
+    }
+    if (updatesSeed) {
+      settings.seed = *patch.seed;
+    }
+    runtime_.setSettings(std::move(settings));
+    return {encodeControlAck(request.id), true};
+  }
   case ControlMethod::SetImage: {
     const auto image = images_.putBase64(request.text, request.payload, request.secondaryText);
-    if (!image.ok || image.asset == nullptr) {
+    const bool hasStoredImage = image.ok && image.asset != nullptr;
+    if (!hasStoredImage) {
       return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
                   escapeJson(image.issue) + "\"]}}",
               false};
@@ -1657,8 +1920,45 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
     return {"{\"id\":" + std::to_string(request.id) +
                 ",\"result\":{\"ok\":true,\"issues\":[],\"hash\":\"" + image.asset->hash +
                 "\",\"name\":\"" + escapeJson(image.asset->name) + "\"}}",
-            false};
+            false, true};
   }
+  case ControlMethod::BeginImageUpload: {
+    const auto image = images_.beginBase64(request.text, request.secondaryText,
+                                           static_cast<std::size_t>(request.number));
+    const bool beganImageUpload = image.ok;
+    if (!beganImageUpload) {
+      return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
+                  escapeJson(image.issue) + "\"]}}",
+              false};
+    }
+    return {encodeControlAck(request.id), false};
+  }
+  case ControlMethod::AppendImageUpload: {
+    const auto image = images_.appendBase64(request.payload);
+    const bool appendedImageUpload = image.ok;
+    if (!appendedImageUpload) {
+      return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
+                  escapeJson(image.issue) + "\"]}}",
+              false};
+    }
+    return {encodeControlAck(request.id), false};
+  }
+  case ControlMethod::CommitImageUpload: {
+    const auto image = images_.commitBase64();
+    const bool hasStoredImage = image.ok && image.asset != nullptr;
+    if (!hasStoredImage) {
+      return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
+                  escapeJson(image.issue) + "\"]}}",
+              false};
+    }
+    return {"{\"id\":" + std::to_string(request.id) +
+                ",\"result\":{\"ok\":true,\"issues\":[],\"hash\":\"" + image.asset->hash +
+                "\",\"name\":\"" + escapeJson(image.asset->name) + "\"}}",
+            false, true};
+  }
+  case ControlMethod::CancelImageUpload:
+    images_.cancelBase64();
+    return {encodeControlAck(request.id), false};
   case ControlMethod::ProposePatch:
     settingsChanged = runtime_.applyIntent(request.intent, TransitionSpec{});
     break;
@@ -1792,6 +2092,8 @@ const SchedulerState& ControlService::scheduler() const { return scheduler_; }
 
 const ImageStore& ControlService::images() const { return images_; }
 
+ImageStore& ControlService::images() { return images_; }
+
 bool ControlService::recordingActive() const { return recordingActive_; }
 
 std::string encodeControlError(std::uint32_t id, const std::string& issue) {
@@ -1828,15 +2130,27 @@ std::string encodeControlState(std::uint32_t id, const ControlSnapshot& snapshot
   std::ostringstream output;
   output << std::fixed << std::setprecision(3) << "{\"id\":" << id << ",\"result\":{"
          << "\"currentPatch\":" << (hasPatch ? *snapshot.patchJson : "null")
-         << ",\"timeline\":" << encodeTimeline(timeline) << ',' << "\"scene\":\""
+         << ",\"timeline\":" << encodeTimeline(timeline) << ",\"settings\":{\"scene\":\""
+         << escapeJson(sceneId(snapshot.settings->scene))
+         << "\",\"gain\":" << snapshot.settings->gain << ",\"hueMode\":\""
+         << (snapshot.settings->hueMode == HueMode::Fixed ? "fixed" : "cycle")
+         << "\",\"fixedHue\":" << snapshot.settings->fixedHue << ",\"background\":\""
+         << (snapshot.settings->background == Background::Transparent ? "transparent" : "black")
+         << "\",\"autoCycle\":" << (snapshot.settings->autoCycle ? "true" : "false")
+         << ",\"cycleSeconds\":" << snapshot.settings->cycleSeconds << ",\"cycleMode\":\""
+         << (snapshot.settings->cycleMode == CycleMode::Bars ? "bars" : "seconds")
+         << "\",\"cycleBars\":" << snapshot.settings->cycleBars
+         << ",\"autoGacha\":" << (snapshot.settings->autoGacha ? "true" : "false")
+         << ",\"gachaBars\":" << snapshot.settings->gachaBars << ",\"seed\":\""
+         << escapeJson(snapshot.settings->seed) << "\"},\"scene\":\""
          << escapeJson(sceneId(snapshot.settings->scene)) << "\","
          << "\"seed\":\"" << escapeJson(snapshot.settings->seed) << "\","
          << "\"bpm\":" << snapshot.tempo->bpm << ',' << "\"barCount\":" << snapshot.tempo->barCount
          << ',' << "\"barPhase\":" << snapshot.tempo->barPhase << ','
          << "\"tempoLocked\":" << (snapshot.tempo->locked ? "true" : "false") << ','
          << "\"tempoMode\":\"" << (snapshot.tempo->mode == TempoMode::Manual ? "manual" : "auto")
-         << "\",\"qualityScale\":1,\"recordingActive\":"
-         << (snapshot.recordingActive ? "true" : "false") << ','
+         << "\",\"qualityScale\":" << snapshot.qualityScale
+         << ",\"recordingActive\":" << (snapshot.recordingActive ? "true" : "false") << ','
          << "\"transitionActive\":" << (snapshot.transitionActive ? "true" : "false") << ','
          << "\"nowSec\":" << snapshot.nowSec << ",\"firedIds\":[";
   for (std::size_t index = 0; index < scheduler.firedIds.size(); ++index) {

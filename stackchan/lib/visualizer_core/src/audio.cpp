@@ -353,6 +353,7 @@ AnalyzedAudioFrame AudioAnalyzer::process(const std::int16_t* samples, std::size
                                           std::uint64_t nowMs) {
   const bool hasSamples = samples != nullptr && count > 0 && sampleRate > 0;
   if (!hasSamples) {
+    tempo_.update(0.0F, 0.0F, nowMs);
     frame_.running = false;
     frame_.tempo = tempo_.state();
     return frame_;

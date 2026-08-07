@@ -73,6 +73,7 @@ export type ModulationPolarity = 'unipolar' | 'bipolar';
 
 export interface ModulationRoute {
   /** "audio:bass" | "audio:mid" | "audio:treble" | "audio:level" | "audio:beat"
+   *  | "audio:beatIntensity" | "audio:gridPulse" | "audio:barPulse"
    *  | "audio:barPhase" | "audio:beatPhase" | "time" | "operator:<opId>" */
   source: string;
   /** "<opId>.<paramId>" */

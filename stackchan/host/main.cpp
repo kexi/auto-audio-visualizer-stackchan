@@ -28,8 +28,11 @@ constexpr std::uint32_t kSampleRate = 16000;
 
 struct CommandLineOptions {
   std::string screenshotPath;
+  std::string audioDevice;
   stackchan::SceneId scene = stackchan::SceneId::Bars;
   bool controlStdio = false;
+  bool requireImage = false;
+  bool listAudioDevices = false;
 };
 
 struct ControlInput {
@@ -45,13 +48,22 @@ CommandLineOptions parseCommandLine(int argumentCount, char** arguments) {
     const bool hasValue = index + 1 < argumentCount;
     const bool setsScreenshot = argument == "--screenshot" && hasValue;
     const bool setsScene = argument == "--scene" && hasValue;
+    const bool setsAudioDevice = argument == "--audio-device" && hasValue;
     const bool enablesControlStdio = argument == "--control-stdio";
+    const bool requiresImage = argument == "--require-image";
+    const bool listsAudioDevices = argument == "--list-audio-devices";
     if (setsScreenshot) {
       options.screenshotPath = arguments[++index];
     } else if (setsScene) {
       options.scene = stackchan::sceneFromId(arguments[++index]);
+    } else if (setsAudioDevice) {
+      options.audioDevice = arguments[++index];
     } else if (enablesControlStdio) {
       options.controlStdio = true;
+    } else if (requiresImage) {
+      options.requireImage = true;
+    } else if (listsAudioDevices) {
+      options.listAudioDevices = true;
     }
   }
   return options;
@@ -92,6 +104,7 @@ void consumeControlBytes(stackchan::ControlService& service,
     } else {
       input.line.clear();
       input.discardingLine = true;
+      service.images().cancelBase64();
       std::cout << stackchan::encodeControlError(0, "request exceeds 8 MiB") << '\n' << std::flush;
     }
   }
@@ -178,14 +191,26 @@ bool saveScreenshot(const std::vector<std::uint8_t>& pixels, const std::string& 
 class SdlCanvas final : public stackchan::Canvas {
 public:
   explicit SdlCanvas(SDL_Renderer* renderer) : renderer_(renderer) {}
-  ~SdlCanvas() override {
+  ~SdlCanvas() override { releaseImages(); }
+
+  void releaseImages() {
     for (const auto& item : imageSurfaces_) {
       SDL_FreeSurface(item.second);
     }
+    imageSurfaces_.clear();
   }
 
-  [[nodiscard]] int width() const override { return kWidth; }
-  [[nodiscard]] int height() const override { return kHeight; }
+  [[nodiscard]] int successfulImageDraws() const { return successfulImageDraws_; }
+
+  void setResolutionScale(float scale) {
+    const float safeScale = std::clamp(scale, 0.5F, 1.0F);
+    logicalWidth_ = std::max(1, static_cast<int>(std::round(kWidth * safeScale)));
+    logicalHeight_ = std::max(1, static_cast<int>(std::round(kHeight * safeScale)));
+    SDL_RenderSetLogicalSize(renderer_, logicalWidth_, logicalHeight_);
+  }
+
+  [[nodiscard]] int width() const override { return logicalWidth_; }
+  [[nodiscard]] int height() const override { return logicalHeight_; }
 
   void clear(stackchan::Color color) override {
     setColor(color);
@@ -295,6 +320,9 @@ public:
                     drawHeight};
     const bool didDraw = SDL_RenderCopy(renderer_, texture, nullptr, &target) == 0;
     SDL_DestroyTexture(texture);
+    if (didDraw) {
+      ++successfulImageDraws_;
+    }
     return didDraw;
   }
 
@@ -306,7 +334,10 @@ private:
   }
 
   SDL_Renderer* renderer_;
+  int logicalWidth_ = kWidth;
+  int logicalHeight_ = kHeight;
   std::unordered_map<std::string, SDL_Surface*> imageSurfaces_;
+  int successfulImageDraws_ = 0;
 };
 
 void fillSyntheticAudio(std::array<std::int16_t, 256>& samples, float seconds) {
@@ -326,8 +357,29 @@ void fillSyntheticAudio(std::array<std::int16_t, 256>& samples, float seconds) {
 int main(int argumentCount, char** arguments) {
   const CommandLineOptions options = parseCommandLine(argumentCount, arguments);
   const bool takesScreenshot = !options.screenshotPath.empty();
-  const bool didInitialize = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) == 0;
+  const bool usesAudioCapture = !options.audioDevice.empty() || options.listAudioDevices;
+  const std::uint32_t sdlSystems =
+      SDL_INIT_VIDEO | SDL_INIT_TIMER | (usesAudioCapture ? SDL_INIT_AUDIO : 0U);
+  const bool didInitialize = SDL_Init(sdlSystems) == 0;
   if (!didInitialize) {
+    return 1;
+  }
+  const bool shouldListAudioDevices = options.listAudioDevices;
+  if (shouldListAudioDevices) {
+    const int count = SDL_GetNumAudioDevices(SDL_TRUE);
+    for (int index = 0; index < count; ++index) {
+      std::cout << index << '\t' << SDL_GetAudioDeviceName(index, SDL_TRUE) << '\n';
+    }
+    SDL_Quit();
+    return count < 0 ? 1 : 0;
+  }
+  const int requestedImageFormats = IMG_INIT_JPG | IMG_INIT_PNG;
+  const int initializedImageFormats = IMG_Init(requestedImageFormats);
+  const bool hasImageDecoders =
+      (initializedImageFormats & requestedImageFormats) == requestedImageFormats;
+  if (!hasImageDecoders) {
+    IMG_Quit();
+    SDL_Quit();
     return 1;
   }
   constexpr int kBytesPerPixel = 4;
@@ -361,10 +413,34 @@ int main(int argumentCount, char** arguments) {
   if (!hasRenderer) {
     SDL_FreeSurface(screenshotSurface);
     SDL_DestroyWindow(window);
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
   SDL_RenderSetLogicalSize(renderer, kWidth, kHeight);
+
+  SDL_AudioDeviceID audioDevice = 0;
+  const bool shouldOpenAudioCapture = usesAudioCapture;
+  if (shouldOpenAudioCapture) {
+    SDL_AudioSpec desired{};
+    desired.freq = static_cast<int>(kSampleRate);
+    desired.format = AUDIO_S16SYS;
+    desired.channels = 1;
+    desired.samples = 256;
+    const char* requestedDevice =
+        options.audioDevice == "default" ? nullptr : options.audioDevice.c_str();
+    audioDevice = SDL_OpenAudioDevice(requestedDevice, SDL_TRUE, &desired, nullptr, 0);
+    const bool didOpenAudio = audioDevice != 0;
+    if (!didOpenAudio) {
+      SDL_DestroyRenderer(renderer);
+      SDL_FreeSurface(screenshotSurface);
+      SDL_DestroyWindow(window);
+      IMG_Quit();
+      SDL_Quit();
+      return 1;
+    }
+    SDL_PauseAudioDevice(audioDevice, 0);
+  }
 
   SdlCanvas canvas(renderer);
   stackchan::SceneRenderer sceneRenderer;
@@ -409,8 +485,17 @@ int main(int argumentCount, char** arguments) {
     const float deltaSeconds = static_cast<float>(currentTicks - previousTicks) / 1000.0F;
     previousTicks = currentTicks;
     const float elapsedSeconds = static_cast<float>(currentTicks) / 1000.0F;
-    fillSyntheticAudio(samples, elapsedSeconds);
-    const auto audio = analyzer.process(samples.data(), samples.size(), kSampleRate,
+    std::size_t sampleCount = samples.size();
+    const bool shouldReadAudioCapture = usesAudioCapture;
+    if (shouldReadAudioCapture) {
+      const std::uint32_t byteCount =
+          SDL_DequeueAudio(audioDevice, samples.data(), samples.size() * sizeof(samples[0]));
+      sampleCount = byteCount / sizeof(samples[0]);
+    } else {
+      fillSyntheticAudio(samples, elapsedSeconds);
+    }
+    const std::int16_t* sampleData = sampleCount > 0U ? samples.data() : nullptr;
+    const auto audio = analyzer.process(sampleData, sampleCount, kSampleRate,
                                         runtime.settings().gain, currentTicks);
     controlService.updateTimeline(audio, elapsedSeconds);
     const bool usesControlStdio = options.controlStdio;
@@ -418,17 +503,28 @@ int main(int argumentCount, char** arguments) {
       pollControlStdio(controlService, audio, currentTicks, controlInput);
     }
     runtime.update(audio, deltaSeconds, currentTicks);
+    canvas.setResolutionScale(runtime.qualityScale());
+    const float hue = runtime.settings().hueMode == stackchan::HueMode::Fixed
+                          ? runtime.settings().fixedHue
+                          : elapsedSeconds * 12.0F * runtime.variation().speed;
     sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
-                       deltaSeconds, elapsedSeconds * 12.0F, runtime.patchJson(),
-                       &controlService.images());
+                       deltaSeconds, hue, runtime.patchJson(), &controlService.images(),
+                       runtime.settings().background, runtime.previousPatchJson(),
+                       runtime.patchTransitionProgress());
     if (takesScreenshot) {
       const bool didSave = saveScreenshot(screenshotPixels, options.screenshotPath);
       if (!didSave) {
         std::cerr << "failed to save screenshot: " << SDL_GetError() << '\n';
         isRunning = false;
+        canvas.releaseImages();
+        const bool hasAudioDevice = audioDevice != 0;
+        if (hasAudioDevice) {
+          SDL_CloseAudioDevice(audioDevice);
+        }
         SDL_DestroyRenderer(renderer);
         SDL_FreeSurface(screenshotSurface);
         SDL_DestroyWindow(window);
+        IMG_Quit();
         SDL_Quit();
         return 1;
       }
@@ -443,9 +539,17 @@ int main(int argumentCount, char** arguments) {
     SDL_Delay(16);
   }
 
+  const bool imageRequirementFailed = options.requireImage && canvas.successfulImageDraws() == 0;
+  canvas.releaseImages();
+
+  const bool hasAudioDevice = audioDevice != 0;
+  if (hasAudioDevice) {
+    SDL_CloseAudioDevice(audioDevice);
+  }
   SDL_DestroyRenderer(renderer);
   SDL_FreeSurface(screenshotSurface);
   SDL_DestroyWindow(window);
+  IMG_Quit();
   SDL_Quit();
-  return 0;
+  return imageRequirementFailed ? 1 : 0;
 }

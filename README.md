@@ -1,8 +1,9 @@
 # VJ Overlay Tool
 
-> **CoreS3 移行中:** ブラウザ版を参照実装として残しながら、M5Stack Stack-chan / CoreS3
-> 向けの C++ 実装へ段階的に移行しています。実機がなくても 320×240 の SDL2
-> シミュレーターとホストテストを利用できます。
+> **CoreS3 移植実装済み・実機検証待ち:** ブラウザ版を参照実装として残しながら、
+> M5Stack Stack-chan / CoreS3 向けの C++ 実装をホストとファームウェアで共有しています。
+> 実機がなくても 320×240 の SDL2 シミュレーター、ホストテスト、CoreS3
+> クロスビルドで開発できます。
 
 ## CoreS3 ホスト開発
 
@@ -16,10 +17,13 @@ direnv allow       # devShell 読み込み時に pre-commit hook も自動設定
 just setup         # 初回の JS 依存インストール
 just compile       # ハードウェア非依存 C++ コアとホストシミュレーターをビルド
 just run           # 320x240 CoreS3 ホストシミュレーターを起動
+just run-audio     # 既定のホスト音声入力でシミュレーターを起動
+just audio-devices # 選択可能なホスト音声入力を一覧表示
 just run-control   # 1行1JSONをstdin/stdoutで操作できるホストシミュレーター
 just host-bridge   # SDLシミュレーターを既存vj-ctlへWebSocket接続
 just device-bridge /dev/cu.usbmodemXXXX # CoreS3を既存vj-ctlへ接続
 just test-host     # 実機不要の C++ テスト
+just scene-check   # 全11シーンをSDLで描画してスクリーンショット検証
 just control-check # ホスト上で外部制御とTimeline発火を結合テスト
 just firmware      # CoreS3 ファームウェアをクロスビルド（実機不要）
 just all           # format/lint/security/test/Web/host/CoreS3 buildを一括検証
@@ -39,7 +43,7 @@ CoreS3画面は、短いタップで左から「前のシーン / TAP / 次の�
 「÷2 / AUTO / ×2」として操作できます。本体タッチセンサーはクリックでガチャ、
 前後スワイプでシーン切替です。
 
-ホストの`--control-stdio`とUSB Serial（115200 baud）は、同じ1行1JSONの制御要求を
+ホストの`--control-stdio`とUSB Serial（921600 baud）は、同じ1行1JSONの制御要求を
 受け付けます。応答は既存Bridgeと同じ`{"id": ..., "result": ...}`または
 `{"id": ..., "error": ...}`形式です。ホストでは、たとえば次のように実機なしで
 プロトコルを確認できます。
@@ -57,7 +61,14 @@ just host-bridge
 # 別ターミナル
 node scripts/vj-ctl.mjs seed "humid-night-market"
 node scripts/vj-ctl.mjs state
+# settings.json の指定項目だけを更新し、CoreS3ではNVSへ保存
+node scripts/vj-ctl.mjs settings ./settings.json
 ```
+
+`settings.json` は部分更新です。`scene`、`gain`、`hueMode`、`fixedHue`、
+`background`、`autoCycle`、`cycleSeconds`、`cycleMode`、`cycleBars`、
+`autoGacha`、`gachaBars`、`seed` を指定でき、公開範囲外の数値はブラウザ版と同じ
+範囲へ丸めます。ホストでは実行中だけ、CoreS3では更新後にNVSへ保存されます。
 
 ```json
 {"id":1,"method":"getState"}
@@ -74,20 +85,32 @@ node scripts/vj-ctl.mjs state
 
 ### 移植状況
 
+ここでの「対応」は、CoreS3のCPU・320×240 RGB565画面・内蔵入出力へ適合させた
+機能移植を指します。WebGL2の画素一致、ブラウザ固有UI、任意形式の画像decodeは
+対象外です。これらの境界を除く制御・演奏機能はホストとCoreS3共通コアへ移植済みです。
+
 | 機能 | ホスト | CoreS3 | 備考 |
 | --- | --- | --- | --- |
-| PCM解析・BPM・ビートグリッド | 対応 | 対応 | ホストは合成PCM、実機は内蔵マイク |
+| PCM解析・BPM・ビートグリッド | 対応 | 対応 | ホストは合成PCMまたはSDL音声入力、実機は内蔵マイク |
 | 10固定シーン・4 variants | 対応 | 対応 | GPUシーンはM5GFX向けCPU表現 |
 | look gacha・オートサイクル | 対応 | 対応 | seedと設定をNVSへ保存 |
 | Stack-chan本体連動 | ― | 対応 | タッチ、RGB、サーボ |
 | Semantic Synth CPUバックエンド | 対応 | 対応 | seed/Patch JSON由来の決定的CPU表現 |
 | Semantic Synth 105 Generator catalog / Patch制御 | 対応 | 対応 | TypeScript正本から生成した同一catalogを返し、Patchを受理 |
 | Semantic Synth 105 Generator描画 | CPU近似 | CPU近似 | WebGL2 GLSLの完全一致ではなく決定論的なCoreS3向け描画 |
+| Patch遷移 | 対応 | 対応 | 同一Topologyはpalette・parameter・modulationを独立補間、Topology変更はデッキクロスフェード |
+| 自動品質縮退 | 対応 | 対応 | フレーム時間のEWMA・ヒステリシスで内部解像度を1.0/0.75/0.5へ調整 |
 | Timelineデータモデル・scheduler | 対応 | 対応 | 秒・小節・外部anchorを実行ループへ接続済み |
 | 外部操作 | stdio対応 | USB Serial対応 | state、Patch、seed、scene、tempo、Timeline |
 | WebSocket CLI | 対応 | 対応 | `just host-bridge` / `just device-bridge DEVICE` |
 | 録画・再生 | 対応 | 対応 | ブラウザ互換JSON、Timeline操作・発火履歴を保持 |
-| 画像Patch | ブラウザ版のみ | 未対応 | SD/PSRAMを含む保存・decode設計が必要 |
+| 画像Patch | PNG/JPEG対応 | PNG/JPEG対応 | SHA-256参照、最大5 MiB、Serialは32 KiBチャンク転送、CoreS3はmicroSDへ永続化 |
+
+`vj-ctl image` は CoreS3 接続時だけ内部的にチャンク転送へ変換されます。通常の制御行は
+64 KiB 上限のままなので、巨大なJSON要求で本体メモリを圧迫しません。画像はPNG/JPEGの
+実バイトと申告MIMEを照合してから登録します。CoreS3ではmicroSDの`/vj-images`へ
+SHA-256名で保存し、起動時に内容を再検証して復元します。microSDが未挿入または
+mountできない場合は、同じ演奏セッション中だけ保持するメモリ動作へ縮退します。
 
 実機が未準備のため、現段階のCoreS3確認範囲はクロスコンパイルまでです。サーボの
 可動範囲、マイク感度、タッチ方向、描画フレームレートは実機入手後に校正します。
