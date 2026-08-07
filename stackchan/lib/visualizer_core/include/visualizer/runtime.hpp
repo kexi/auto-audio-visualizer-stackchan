@@ -22,6 +22,7 @@ public:
   void setSettings(Settings settings);
   void shiftScene(int delta);
   void reroll(std::uint32_t entropy);
+  bool applySeed(const std::string& seed, const TransitionSpec& transition = {});
   bool applyIntent(const SemanticIntent& intent, const TransitionSpec& transition);
   [[nodiscard]] const Settings& settings() const;
   [[nodiscard]] const Variation& variation() const;

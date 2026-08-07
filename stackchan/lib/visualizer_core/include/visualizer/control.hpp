@@ -1,6 +1,7 @@
 #pragma once
 
 #include "visualizer/audio.hpp"
+#include "visualizer/image_store.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/timeline.hpp"
 
@@ -12,6 +13,8 @@ namespace stackchan {
 
 enum class ControlMethod {
   GetState,
+  GetCatalog,
+  SetImage,
   ProposePatch,
   ProposeSeed,
   SetScene,
@@ -32,6 +35,8 @@ struct ControlRequest {
   std::uint32_t id = 0;
   ControlMethod method = ControlMethod::Unknown;
   std::string text;
+  std::string secondaryText;
+  std::string payload;
   float number = 0.0F;
   TimelineOp timelineOperation{};
   SemanticIntent intent{};
@@ -65,6 +70,7 @@ public:
   bool updateTimeline(const AnalyzedAudioFrame& audio, double nowSec);
   [[nodiscard]] const PerformanceTimeline& timeline() const;
   [[nodiscard]] const SchedulerState& scheduler() const;
+  [[nodiscard]] const ImageStore& images() const;
   [[nodiscard]] bool recordingActive() const;
 
 private:
@@ -85,6 +91,7 @@ private:
   AudioAnalyzer& analyzer_;
   PerformanceTimeline timeline_{};
   SchedulerState scheduler_{};
+  ImageStore images_{};
   bool recordingActive_ = false;
   std::string recordingInitialPatch_;
   std::string recordingSessionSeed_;

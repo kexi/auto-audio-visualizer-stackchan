@@ -1,11 +1,13 @@
 #pragma once
 
 #include "visualizer/audio.hpp"
+#include "visualizer/image_store.hpp"
 #include "visualizer/settings.hpp"
 #include "visualizer/variation.hpp"
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace stackchan {
 
@@ -26,6 +28,7 @@ public:
   virtual void rectangle(int x, int y, int width, int height, Color color, bool filled) = 0;
   virtual void circle(int x, int y, int radius, Color color, bool filled) = 0;
   virtual void text(int x, int y, const std::string& value, Color color) = 0;
+  virtual bool image(const ImageAsset& asset, int x, int y, int width, int height) = 0;
 };
 
 [[nodiscard]] Color hsl(float hue, float saturation, float lightness, std::uint8_t alpha = 255);
@@ -33,7 +36,8 @@ public:
 class SceneRenderer {
 public:
   void draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame& audio,
-            const Variation& variation, float elapsedSeconds, float deltaSeconds, float baseHue);
+            const Variation& variation, float elapsedSeconds, float deltaSeconds, float baseHue,
+            const std::string& patchJson = {}, const ImageStore* images = nullptr);
 
 private:
   void drawBars(Canvas& canvas, const AnalyzedAudioFrame& audio, const Variation& variation,
@@ -57,7 +61,19 @@ private:
   void drawAurora(Canvas& canvas, const AnalyzedAudioFrame& audio, const Variation& variation,
                   float elapsedSeconds, float hue);
   void drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& audio,
-                         const Variation& variation, float elapsedSeconds, float hue);
+                         const Variation& variation, float elapsedSeconds, float hue,
+                         const std::string& patchJson, const ImageStore* images);
+
+  void compileSemanticPatch(const std::string& patchJson);
+
+  std::string compiledPatchJson_;
+  std::vector<std::uint32_t> sourceHashes_;
+  std::vector<std::uint32_t> fieldHashes_;
+  std::vector<std::uint32_t> modifierHashes_;
+  std::vector<std::uint32_t> materialHashes_;
+  std::uint32_t semanticGraphHash_ = 0;
+  std::string semanticImageHash_;
+  bool usesImageSource_ = false;
 };
 
 } // namespace stackchan

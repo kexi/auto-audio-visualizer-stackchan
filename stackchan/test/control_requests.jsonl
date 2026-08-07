@@ -5,3 +5,13 @@
 {"id":5,"method":"startRecording"}
 {"id":6,"method":"applyTimelineOp","params":{"op":{"op":"setLockedUntil","sec":30}}}
 {"id":7,"method":"stopRecording"}
+{"id":8,"method":"getCatalog"}
+{"id":9,"method":"proposeSeed","params":{"seed":"portable-neon-042"}}
+{"id":10,"method":"getState"}
+{"id":11,"method":"proposeSeed","params":{"seed":"日本語🎛️"}}
+{"id":12,"method":"getState"}
+{"id":13,"method":"proposeSeed","params":{"seed":""}}
+{"id":14,"method":"getState"}
+{"id":15,"method":"setImage","params":{"name":"pixel.png","bytesBase64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=","mime":"image/png"}}
+{"id":16,"method":"proposePatch","params":{"patch":{"schemaVersion":1,"seed":"image-patch","operators":[{"id":"src0","generatorId":"stamp","generatorVersion":1,"parameters":{"fit":"contain","scale":1,"invert":false}},{"id":"mod0","generatorId":"spin","generatorVersion":1,"parameters":{"rate":0.4,"wobble":0.2}},{"id":"mat0","generatorId":"neon","generatorVersion":1,"parameters":{"hue":200,"intensity":1.2}}],"routes":[],"palette":{"mode":"mono","hueOffset":200,"saturation":80,"lightness":55},"composition":{"symmetry":4,"scale":1,"speed":1},"qualityTier":"medium","images":{"src0.image":{"name":"pixel.png","hash":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"}}}}}
+{"id":17,"method":"getState"}

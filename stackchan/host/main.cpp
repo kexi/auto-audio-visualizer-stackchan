@@ -4,17 +4,20 @@
 #include "visualizer/scene_renderer.hpp"
 
 #include <SDL.h>
+#include <SDL_image.h>
 
 #include <poll.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -65,7 +68,7 @@ void dispatchControlLine(stackchan::ControlService& service,
 void consumeControlBytes(stackchan::ControlService& service,
                          const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
                          ControlInput& input, const char* bytes, std::size_t count) {
-  constexpr std::size_t kMaximumControlLine = 65536;
+  constexpr std::size_t kMaximumControlLine = 8U * 1024U * 1024U;
   for (std::size_t index = 0; index < count; ++index) {
     const char character = bytes[index];
     const bool endsLine = character == '\n';
@@ -89,8 +92,7 @@ void consumeControlBytes(stackchan::ControlService& service,
     } else {
       input.line.clear();
       input.discardingLine = true;
-      std::cout << stackchan::encodeControlError(0, "request exceeds 65536 bytes") << '\n'
-                << std::flush;
+      std::cout << stackchan::encodeControlError(0, "request exceeds 8 MiB") << '\n' << std::flush;
     }
   }
 }
@@ -176,6 +178,11 @@ bool saveScreenshot(const std::vector<std::uint8_t>& pixels, const std::string& 
 class SdlCanvas final : public stackchan::Canvas {
 public:
   explicit SdlCanvas(SDL_Renderer* renderer) : renderer_(renderer) {}
+  ~SdlCanvas() override {
+    for (const auto& item : imageSurfaces_) {
+      SDL_FreeSurface(item.second);
+    }
+  }
 
   [[nodiscard]] int width() const override { return kWidth; }
   [[nodiscard]] int height() const override { return kHeight; }
@@ -251,6 +258,46 @@ public:
     }
   }
 
+  bool image(const stackchan::ImageAsset& asset, int x, int y, int width, int height) override {
+    SDL_Surface* surface = nullptr;
+    const auto cached = imageSurfaces_.find(asset.hash);
+    const bool hasCachedSurface = cached != imageSurfaces_.end();
+    if (hasCachedSurface) {
+      surface = cached->second;
+    } else {
+      const bool fitsDecoder = asset.bytes.size() <= static_cast<std::size_t>(INT_MAX);
+      if (!fitsDecoder) {
+        return false;
+      }
+      SDL_RWops* data =
+          SDL_RWFromConstMem(asset.bytes.data(), static_cast<int>(asset.bytes.size()));
+      const bool hasData = data != nullptr;
+      if (!hasData) {
+        return false;
+      }
+      surface = IMG_Load_RW(data, 1);
+      const bool decoded = surface != nullptr;
+      if (!decoded) {
+        return false;
+      }
+      imageSurfaces_.emplace(asset.hash, surface);
+    }
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
+    const bool hasTexture = texture != nullptr;
+    if (!hasTexture) {
+      return false;
+    }
+    const float scale =
+        std::min(static_cast<float>(width) / surface->w, static_cast<float>(height) / surface->h);
+    const int drawWidth = std::max(1, static_cast<int>(std::round(surface->w * scale)));
+    const int drawHeight = std::max(1, static_cast<int>(std::round(surface->h * scale)));
+    SDL_Rect target{x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth,
+                    drawHeight};
+    const bool didDraw = SDL_RenderCopy(renderer_, texture, nullptr, &target) == 0;
+    SDL_DestroyTexture(texture);
+    return didDraw;
+  }
+
 private:
   void setColor(stackchan::Color color) {
     SDL_SetRenderDrawBlendMode(renderer_,
@@ -259,6 +306,7 @@ private:
   }
 
   SDL_Renderer* renderer_;
+  std::unordered_map<std::string, SDL_Surface*> imageSurfaces_;
 };
 
 void fillSyntheticAudio(std::array<std::int16_t, 256>& samples, float seconds) {
@@ -371,7 +419,8 @@ int main(int argumentCount, char** arguments) {
     }
     runtime.update(audio, deltaSeconds, currentTicks);
     sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
-                       deltaSeconds, elapsedSeconds * 12.0F);
+                       deltaSeconds, elapsedSeconds * 12.0F, runtime.patchJson(),
+                       &controlService.images());
     if (takesScreenshot) {
       const bool didSave = saveScreenshot(screenshotPixels, options.screenshotPath);
       if (!didSave) {

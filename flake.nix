@@ -34,6 +34,7 @@
             pnpm_10
             ripgrep
             SDL2
+            SDL2_image
           ]) ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
             chromium
             nss

@@ -1,4 +1,5 @@
 #include "visualizer/control.hpp"
+#include "visualizer/generated_catalog.hpp"
 
 #include <algorithm>
 #include <array>
@@ -328,6 +329,60 @@ std::optional<JsonView> objectProperty(const std::string& json, JsonView object,
   return std::nullopt;
 }
 
+std::optional<std::vector<std::pair<std::string, JsonView>>> objectMembers(const std::string& json,
+                                                                           JsonView object) {
+  const bool isObject =
+      object.end > object.begin + 1 && json[object.begin] == '{' && json[object.end - 1] == '}';
+  if (!isObject) {
+    return std::nullopt;
+  }
+  std::vector<std::pair<std::string, JsonView>> members;
+  std::size_t position = object.begin + 1;
+  while (position < object.end - 1) {
+    skipWhitespace(json, position);
+    const bool reachedObjectEnd = position >= object.end - 1;
+    if (reachedObjectEnd) {
+      break;
+    }
+    const auto keyEnd = stringEnd(json, position);
+    const bool keyFitsObject = keyEnd.has_value() && *keyEnd <= object.end;
+    if (!keyFitsObject) {
+      return std::nullopt;
+    }
+    const auto key = decodeString(json, {position, *keyEnd});
+    const bool hasKey = key.has_value();
+    if (!hasKey) {
+      return std::nullopt;
+    }
+    position = *keyEnd;
+    skipWhitespace(json, position);
+    const bool hasColon = position < object.end - 1 && json[position] == ':';
+    if (!hasColon) {
+      return std::nullopt;
+    }
+    ++position;
+    skipWhitespace(json, position);
+    const std::size_t valueBegin = position;
+    const auto valueEndPosition = valueEnd(json, position);
+    const bool valueFitsObject = valueEndPosition.has_value() && *valueEndPosition <= object.end;
+    if (!valueFitsObject) {
+      return std::nullopt;
+    }
+    members.push_back({*key, {valueBegin, *valueEndPosition}});
+    position = *valueEndPosition;
+    skipWhitespace(json, position);
+    const bool hasMore = position < object.end - 1;
+    if (hasMore) {
+      const bool hasComma = json[position] == ',';
+      if (!hasComma) {
+        return std::nullopt;
+      }
+      ++position;
+    }
+  }
+  return members;
+}
+
 std::optional<std::vector<JsonView>> arrayElements(const std::string& json, JsonView array) {
   const bool isArray =
       array.end > array.begin + 1 && json[array.begin] == '[' && json[array.end - 1] == ']';
@@ -445,8 +500,10 @@ std::string escapeJson(const std::string& value) {
 }
 
 ControlMethod methodFromName(const std::string& name) {
-  constexpr std::array<std::pair<const char*, ControlMethod>, 14> kMethods = {{
+  constexpr std::array<std::pair<const char*, ControlMethod>, 16> kMethods = {{
       {"getState", ControlMethod::GetState},
+      {"getCatalog", ControlMethod::GetCatalog},
+      {"setImage", ControlMethod::SetImage},
       {"proposePatch", ControlMethod::ProposePatch},
       {"proposeSeed", ControlMethod::ProposeSeed},
       {"setScene", ControlMethod::SetScene},
@@ -561,7 +618,11 @@ std::optional<TransitionSpec> parseTransition(const std::string& json, JsonView 
                                             : TransitionEasing::EaseInOut};
 }
 
-bool hasVisualPatchShape(const std::string& json, JsonView patch);
+std::optional<std::string> visualPatchIssue(const std::string& json, JsonView patch);
+
+bool hasVisualPatchShape(const std::string& json, JsonView patch) {
+  return !visualPatchIssue(json, patch).has_value();
+}
 
 std::optional<SemanticIntent> parseIntent(const std::string& json, JsonView object) {
   const bool isObject = object.end > object.begin && json[object.begin] == '{';
@@ -890,7 +951,168 @@ struct ParsedRecording {
   std::vector<ReplayOperation> operations;
 };
 
-bool hasVisualPatchShape(const std::string& json, JsonView patch) {
+bool isJsonObject(const std::string& json, JsonView view) {
+  return view.end > view.begin + 1 && json[view.begin] == '{' && json[view.end - 1] == '}';
+}
+
+bool isJsonArray(const std::string& json, JsonView view) {
+  return view.end > view.begin + 1 && json[view.begin] == '[' && json[view.end - 1] == ']';
+}
+
+std::optional<bool> booleanValue(const std::string& json, JsonView view) {
+  const std::string text = json.substr(view.begin, view.end - view.begin);
+  const bool isTrue = text == "true";
+  if (isTrue) {
+    return true;
+  }
+  const bool isFalse = text == "false";
+  return isFalse ? std::optional<bool>{false} : std::nullopt;
+}
+
+const GeneratedGeneratorDefinition* generatorDefinition(const std::string& id) {
+  for (std::size_t index = 0; index < kGeneratorDefinitionCount; ++index) {
+    const bool matches = id == kGeneratorDefinitions[index].id;
+    if (matches) {
+      return &kGeneratorDefinitions[index];
+    }
+  }
+  return nullptr;
+}
+
+const GeneratedParameterDefinition* parameterDefinition(const std::string& generatorId,
+                                                        const std::string& parameterId) {
+  for (std::size_t index = 0; index < kParameterDefinitionCount; ++index) {
+    const auto& definition = kParameterDefinitions[index];
+    const bool matches = generatorId == definition.generatorId && parameterId == definition.id;
+    if (matches) {
+      return &definition;
+    }
+  }
+  return nullptr;
+}
+
+bool hasTextureDefinition(const std::string& generatorId, const std::string& textureId) {
+  for (std::size_t index = 0; index < kTextureDefinitionCount; ++index) {
+    const auto& definition = kTextureDefinitions[index];
+    const bool matches = generatorId == definition.generatorId && textureId == definition.id;
+    if (matches) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool enumContains(const char* options, const std::string& value) {
+  const std::string values = options;
+  std::size_t begin = 0;
+  while (begin <= values.size()) {
+    const std::size_t separator = values.find('|', begin);
+    const std::size_t end = separator == std::string::npos ? values.size() : separator;
+    const bool matches = values.substr(begin, end - begin) == value;
+    if (matches) {
+      return true;
+    }
+    const bool reachedEnd = separator == std::string::npos;
+    if (reachedEnd) {
+      break;
+    }
+    begin = separator + 1;
+  }
+  return false;
+}
+
+std::optional<std::pair<std::string, std::string>> patchTarget(const std::string& value) {
+  const std::size_t separator = value.find('.');
+  const bool hasTwoParts = separator > 0 && separator < value.size() - 1;
+  const bool hasOneSeparator = hasTwoParts && value.find('.', separator + 1) == std::string::npos;
+  if (!hasOneSeparator) {
+    return std::nullopt;
+  }
+  return std::pair<std::string, std::string>{value.substr(0, separator),
+                                             value.substr(separator + 1)};
+}
+
+int categoryRank(const std::string& category) {
+  const bool isSource = category == "source";
+  const bool isField = category == "field";
+  const bool isModifier = category == "modifier";
+  if (isSource) {
+    return 0;
+  }
+  if (isField) {
+    return 1;
+  }
+  return isModifier ? 2 : 3;
+}
+
+double costWeight(const std::string& costClass) {
+  const bool isMicro = costClass == "micro";
+  const bool isLight = costClass == "light";
+  const bool isMedium = costClass == "medium";
+  if (isMicro) {
+    return 1.0;
+  }
+  if (isLight) {
+    return 3.0;
+  }
+  return isMedium ? 10.0 : 30.0;
+}
+
+std::optional<std::string> parameterValueIssue(const std::string& json, JsonView value,
+                                               const GeneratedParameterDefinition& definition) {
+  const std::string kind = definition.kind;
+  const bool expectsNumber = kind == "number" || kind == "int";
+  if (expectsNumber) {
+    const auto number = numberValue(json, value);
+    const bool hasNumber = number.has_value();
+    const bool expectsInteger = kind == "int";
+    const bool isInteger = hasNumber && std::floor(*number) == *number;
+    const bool hasExpectedType = hasNumber && (!expectsInteger || isInteger);
+    if (!hasExpectedType) {
+      return "parameter \"" + std::string(definition.id) + "\" has invalid type";
+    }
+    const bool belowMinimum = definition.hasRange && *number < definition.minimum;
+    const bool aboveMaximum = definition.hasRange && *number > definition.maximum;
+    if (belowMinimum || aboveMaximum) {
+      return "parameter \"" + std::string(definition.id) + "\" is outside its range";
+    }
+    return std::nullopt;
+  }
+  const bool expectsBoolean = kind == "bool";
+  if (expectsBoolean) {
+    const bool hasBoolean = booleanValue(json, value).has_value();
+    return hasBoolean ? std::nullopt
+                      : std::optional<std::string>{"parameter \"" + std::string(definition.id) +
+                                                   "\" must be boolean"};
+  }
+  const auto enumValue = decodeString(json, value);
+  const bool hasEnumValue = enumValue.has_value() && enumContains(definition.options, *enumValue);
+  return hasEnumValue ? std::nullopt
+                      : std::optional<std::string>{"parameter \"" + std::string(definition.id) +
+                                                   "\" is not a supported enum value"};
+}
+
+struct ValidatedOperator {
+  std::string id;
+  const GeneratedGeneratorDefinition* generator = nullptr;
+};
+
+const ValidatedOperator* validatedOperator(const std::vector<ValidatedOperator>& operators,
+                                           const std::string& id) {
+  for (const auto& operation : operators) {
+    const bool matches = operation.id == id;
+    if (matches) {
+      return &operation;
+    }
+  }
+  return nullptr;
+}
+
+std::optional<std::string> visualPatchIssue(const std::string& json, JsonView patch) {
+  const bool isPatchObject = isJsonObject(json, patch);
+  if (!isPatchObject) {
+    return "patch must be an object";
+  }
   const auto schemaVersion = numberProperty(json, patch, "schemaVersion");
   const auto seed = stringProperty(json, patch, "seed");
   const auto operators = objectProperty(json, patch, "operators");
@@ -900,14 +1122,254 @@ bool hasVisualPatchShape(const std::string& json, JsonView patch) {
   const auto quality = stringProperty(json, patch, "qualityTier");
   const bool hasSchemaVersion =
       schemaVersion.has_value() && *schemaVersion == 1.0 && std::floor(*schemaVersion) == 1.0;
+  if (!hasSchemaVersion) {
+    return "schemaVersion must be 1";
+  }
   const bool hasSeed = seed.has_value();
+  if (!hasSeed) {
+    return "seed must be a string";
+  }
   const bool hasArrays = operators.has_value() && routes.has_value() &&
-                         json[operators->begin] == '[' && json[routes->begin] == '[';
+                         isJsonArray(json, *operators) && isJsonArray(json, *routes);
+  if (!hasArrays) {
+    return "operators and routes must be arrays";
+  }
   const bool hasObjects = palette.has_value() && composition.has_value() &&
-                          json[palette->begin] == '{' && json[composition->begin] == '{';
+                          isJsonObject(json, *palette) && isJsonObject(json, *composition);
+  if (!hasObjects) {
+    return "palette and composition must be objects";
+  }
   const bool hasQuality =
       quality.has_value() && (*quality == "low" || *quality == "medium" || *quality == "high");
-  return hasSchemaVersion && hasSeed && hasArrays && hasObjects && hasQuality;
+  if (!hasQuality) {
+    return "qualityTier must be low, medium, or high";
+  }
+
+  const auto operatorElements = arrayElements(json, *operators);
+  const auto routeElements = arrayElements(json, *routes);
+  const bool hasElements = operatorElements.has_value() && routeElements.has_value();
+  if (!hasElements) {
+    return "operators or routes contains malformed JSON";
+  }
+
+  std::vector<ValidatedOperator> validatedOperators;
+  std::array<int, 4> categoryCounts{};
+  int lastCategoryRank = -1;
+  double totalCost = 0.0;
+  int totalPasses = 0;
+  int heavyCount = 0;
+  int statefulCount = 0;
+  const double resolutionScale = *quality == "low" ? 0.5 : (*quality == "medium" ? 0.75 : 1.0);
+  for (const JsonView operation : *operatorElements) {
+    const bool isOperatorObject = isJsonObject(json, operation);
+    if (!isOperatorObject) {
+      return "every operator must be an object";
+    }
+    const auto id = stringProperty(json, operation, "id");
+    const auto generatorId = stringProperty(json, operation, "generatorId");
+    const auto generatorVersion = numberProperty(json, operation, "generatorVersion");
+    const auto parameters = objectProperty(json, operation, "parameters");
+    const bool hasOperatorFields =
+        id.has_value() && generatorId.has_value() && generatorVersion.has_value() &&
+        std::floor(*generatorVersion) == *generatorVersion && *generatorVersion >= 1.0 &&
+        parameters.has_value() && isJsonObject(json, *parameters);
+    if (!hasOperatorFields) {
+      return "operator fields do not match VisualOperator schema";
+    }
+    const bool hasDuplicateId = validatedOperator(validatedOperators, *id) != nullptr;
+    if (hasDuplicateId) {
+      return "duplicate operator id \"" + *id + "\"";
+    }
+    const auto* definition = generatorDefinition(*generatorId);
+    const bool hasGenerator = definition != nullptr;
+    if (!hasGenerator) {
+      return "generator \"" + *generatorId + "\" not found in catalog";
+    }
+    const bool hasMatchingVersion = definition->version == static_cast<int>(*generatorVersion);
+    if (!hasMatchingVersion) {
+      return "generator \"" + *generatorId + "\" version does not match catalog";
+    }
+    const int rank = categoryRank(definition->category);
+    const bool hasValidStageOrder = rank >= lastCategoryRank;
+    if (!hasValidStageOrder) {
+      return "operators must be ordered Source -> Field -> Modifier -> Material";
+    }
+    lastCategoryRank = rank;
+    ++categoryCounts[static_cast<std::size_t>(rank)];
+
+    const auto parameterMembers = objectMembers(json, *parameters);
+    const bool hasParameterMembers = parameterMembers.has_value();
+    if (!hasParameterMembers) {
+      return "operator parameters contains malformed JSON";
+    }
+    for (const auto& parameter : *parameterMembers) {
+      const auto* parameterDef = parameterDefinition(*generatorId, parameter.first);
+      const bool hasParameter = parameterDef != nullptr;
+      if (!hasParameter) {
+        return "parameter \"" + parameter.first + "\" is not defined on generator \"" +
+               *generatorId + "\"";
+      }
+      const auto issue = parameterValueIssue(json, parameter.second, *parameterDef);
+      const bool hasIssue = issue.has_value();
+      if (hasIssue) {
+        return issue;
+      }
+    }
+
+    totalCost += costWeight(definition->costClass) * definition->relativeFill * resolutionScale *
+                 resolutionScale;
+    totalPasses += definition->passes;
+    heavyCount += std::string(definition->costClass) == "heavy" ? 1 : 0;
+    statefulCount += definition->stateful ? 1 : 0;
+    validatedOperators.push_back({*id, definition});
+  }
+
+  const bool hasValidSourceCount = categoryCounts[0] >= 1 && categoryCounts[0] <= 2;
+  const bool hasValidFieldCount = categoryCounts[1] <= 2;
+  const bool hasValidModifierCount = categoryCounts[2] >= 1 && categoryCounts[2] <= 3;
+  const bool hasValidMaterialCount = categoryCounts[3] == 1;
+  const bool hasValidCounts =
+      hasValidSourceCount && hasValidFieldCount && hasValidModifierCount && hasValidMaterialCount;
+  if (!hasValidCounts) {
+    return "operator category counts exceed the VisualPatch limits";
+  }
+
+  for (const JsonView route : *routeElements) {
+    const bool isRouteObject = isJsonObject(json, route);
+    if (!isRouteObject) {
+      return "every route must be an object";
+    }
+    const auto source = stringProperty(json, route, "source");
+    const auto target = stringProperty(json, route, "target");
+    const auto amount = numberProperty(json, route, "amount");
+    const auto polarity = stringProperty(json, route, "polarity");
+    const auto smoothing = numberProperty(json, route, "smoothing");
+    const bool hasRouteFields = source.has_value() && target.has_value() && amount.has_value() &&
+                                polarity.has_value() && smoothing.has_value();
+    if (!hasRouteFields) {
+      return "route fields do not match ModulationRoute schema";
+    }
+    const bool hasPolarity = *polarity == "unipolar" || *polarity == "bipolar";
+    const bool hasSmoothing = *smoothing >= 0.0;
+    if (!hasPolarity || !hasSmoothing) {
+      return "route polarity or smoothing is invalid";
+    }
+    const auto targetParts = patchTarget(*target);
+    const bool hasTargetParts = targetParts.has_value();
+    if (!hasTargetParts) {
+      return "route target must be <opId>.<paramId>";
+    }
+    const auto* targetOperator = validatedOperator(validatedOperators, targetParts->first);
+    const bool hasTargetOperator = targetOperator != nullptr;
+    if (!hasTargetOperator) {
+      return "route target operator does not exist";
+    }
+    const auto* targetParameter =
+        parameterDefinition(targetOperator->generator->id, targetParts->second);
+    const bool hasTargetParameter = targetParameter != nullptr;
+    if (!hasTargetParameter) {
+      return "route target parameter does not exist";
+    }
+    const bool isModulatable = targetParameter->modulatable;
+    if (!isModulatable) {
+      return "route target parameter is not modulatable";
+    }
+
+    constexpr std::array<const char*, 8> kKnownSources = {
+        "time",        "audio:bass", "audio:mid",      "audio:treble",
+        "audio:level", "audio:beat", "audio:barPhase", "audio:beatPhase",
+    };
+    const bool isKnownSource =
+        std::any_of(kKnownSources.begin(), kKnownSources.end(),
+                    [&source](const char* candidate) { return *source == candidate; });
+    const std::string operatorPrefix = "operator:";
+    const bool isOperatorSource = source->rfind(operatorPrefix, 0) == 0;
+    const std::string sourceOperatorId =
+        isOperatorSource ? source->substr(operatorPrefix.size()) : std::string{};
+    const bool hasSourceOperator =
+        isOperatorSource && validatedOperator(validatedOperators, sourceOperatorId) != nullptr;
+    if (!isKnownSource && !hasSourceOperator) {
+      return "route source is not recognized";
+    }
+    const bool isSelfModulation = isOperatorSource && sourceOperatorId == targetParts->first;
+    if (isSelfModulation) {
+      return "an operator cannot modulate itself";
+    }
+  }
+
+  const auto mode = stringProperty(json, *palette, "mode");
+  const auto hueOffset = numberProperty(json, *palette, "hueOffset");
+  const auto saturation = numberProperty(json, *palette, "saturation");
+  const auto lightness = numberProperty(json, *palette, "lightness");
+  const bool hasPaletteFields =
+      mode.has_value() && hueOffset.has_value() && saturation.has_value() && lightness.has_value();
+  if (!hasPaletteFields) {
+    return "palette fields do not match PaletteSpec schema";
+  }
+  constexpr std::array<const char*, 5> kPaletteModes = {"mono", "analogous", "complementary",
+                                                        "triadic", "rainbow"};
+  const bool hasPaletteMode = std::any_of(kPaletteModes.begin(), kPaletteModes.end(),
+                                          [&mode](const char* value) { return *mode == value; });
+  const bool hasPaletteRanges = *hueOffset >= 0.0 && *hueOffset <= 360.0 && *saturation >= 0.0 &&
+                                *saturation <= 100.0 && *lightness >= 0.0 && *lightness <= 100.0;
+  if (!hasPaletteMode || !hasPaletteRanges) {
+    return "palette mode or numeric range is invalid";
+  }
+
+  const auto symmetry = numberProperty(json, *composition, "symmetry");
+  const auto scale = numberProperty(json, *composition, "scale");
+  const auto speed = numberProperty(json, *composition, "speed");
+  const bool hasComposition = symmetry.has_value() && scale.has_value() && speed.has_value();
+  if (!hasComposition) {
+    return "composition fields must be finite numbers";
+  }
+
+  const auto images = objectProperty(json, patch, "images");
+  const bool hasImages = images.has_value();
+  if (hasImages) {
+    const auto imageMembers = objectMembers(json, *images);
+    const bool hasImageMembers = imageMembers.has_value();
+    if (!hasImageMembers) {
+      return "images must be an object";
+    }
+    for (const auto& image : *imageMembers) {
+      const auto targetParts = patchTarget(image.first);
+      const bool hasTargetParts = targetParts.has_value();
+      if (!hasTargetParts) {
+        return "image key must be <opId>.<slot>";
+      }
+      const auto* targetOperator = validatedOperator(validatedOperators, targetParts->first);
+      const bool hasTargetOperator = targetOperator != nullptr;
+      if (!hasTargetOperator) {
+        return "image target operator does not exist";
+      }
+      const bool hasTextureSlot =
+          hasTextureDefinition(targetOperator->generator->id, targetParts->second);
+      if (!hasTextureSlot) {
+        return "image target texture slot does not exist";
+      }
+      const bool isImageObject = isJsonObject(json, image.second);
+      if (!isImageObject) {
+        return "image reference must be an object";
+      }
+      const auto name = stringProperty(json, image.second, "name");
+      const auto hash = stringProperty(json, image.second, "hash");
+      const bool hasImageReference =
+          name.has_value() && !name->empty() && hash.has_value() && !hash->empty();
+      if (!hasImageReference) {
+        return "image reference name and hash must be non-empty strings";
+      }
+    }
+  }
+
+  const double maximumCost = *quality == "low" ? 50.0 : (*quality == "medium" ? 120.0 : 250.0);
+  const int maximumPasses = *quality == "low" ? 2 : (*quality == "medium" ? 4 : 8);
+  const int maximumHeavy = *quality == "low" ? 0 : (*quality == "medium" ? 1 : 2);
+  const int maximumStateful = *quality == "low" ? 1 : (*quality == "medium" ? 2 : 3);
+  const bool fitsBudget = totalCost <= maximumCost && totalPasses <= maximumPasses &&
+                          heavyCount <= maximumHeavy && statefulCount <= maximumStateful;
+  return fitsBudget ? std::nullopt
+                    : std::optional<std::string>{"patch exceeds its quality-tier render budget"};
 }
 
 ParsedRecording parsePerformanceRecording(const std::string& json) {
@@ -1023,9 +1485,11 @@ ControlRequest parseControlRequest(const std::string& json) {
   if (needsText) {
     const std::string key = needsSeed ? "seed" : (needsScene ? "scene" : "id");
     const auto text = params.has_value() ? stringProperty(json, *params, key) : std::nullopt;
-    const bool hasText = text.has_value() && !text->empty();
+    const bool allowsEmptyText = needsSeed;
+    const bool hasText = text.has_value() && (allowsEmptyText || !text->empty());
     if (!hasText) {
-      request.issue = key + " must be a non-empty string";
+      request.issue =
+          allowsEmptyText ? key + " must be a string" : key + " must be a non-empty string";
       return request;
     }
     const bool hasKnownScene =
@@ -1085,19 +1549,36 @@ ControlRequest parseControlRequest(const std::string& json) {
       request.issue = "params.patch must be an object";
       return request;
     }
-    const bool hasPatchShape = hasVisualPatchShape(json, *patch);
-    if (!hasPatchShape) {
-      request.issue = "params.patch does not match VisualPatch schema";
+    const auto patchIssue = visualPatchIssue(json, *patch);
+    const bool hasPatchIssue = patchIssue.has_value();
+    if (hasPatchIssue) {
+      request.issue = *patchIssue;
       return request;
     }
     const auto seed = stringProperty(json, *patch, "seed");
-    const bool hasSeed = seed.has_value() && !seed->empty();
+    const bool hasSeed = seed.has_value();
     if (!hasSeed) {
-      request.issue = "patch.seed must be a non-empty string";
+      request.issue = "patch.seed must be a string";
       return request;
     }
     request.intent.seed = *seed;
     request.intent.patchJson = json.substr(patch->begin, patch->end - patch->begin);
+  }
+
+  const bool setsImage = request.method == ControlMethod::SetImage;
+  if (setsImage) {
+    const auto name = params.has_value() ? stringProperty(json, *params, "name") : std::nullopt;
+    const auto bytes =
+        params.has_value() ? stringProperty(json, *params, "bytesBase64") : std::nullopt;
+    const auto mime = params.has_value() ? stringProperty(json, *params, "mime") : std::nullopt;
+    const bool hasImageFields = name.has_value() && bytes.has_value() && mime.has_value();
+    if (!hasImageFields) {
+      request.issue = "setImage requires string name, bytesBase64, and mime";
+      return request;
+    }
+    request.text = *name;
+    request.secondaryText = *mime;
+    request.payload = *bytes;
   }
 
   const bool loadsRecording = request.method == ControlMethod::LoadRecording;
@@ -1126,7 +1607,8 @@ TimeContext ControlService::timeContext(const AnalyzedAudioFrame& audio, double 
 bool ControlService::applyDueEvents(const std::vector<DueEvent>& dueEvents) {
   bool settingsChanged = false;
   for (const DueEvent& due : dueEvents) {
-    if (recordingActive_) {
+    const bool shouldRecord = recordingActive_;
+    if (shouldRecord) {
       firedRecords_.push_back({due.firedAtSec, due.event.id});
     }
     settingsChanged =
@@ -1140,6 +1622,12 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
                                        std::uint32_t entropy) {
   const bool hasValidRequest = request.ok;
   if (!hasValidRequest) {
+    const bool isPatchProposal = request.method == ControlMethod::ProposePatch;
+    if (isPatchProposal) {
+      return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
+                  escapeJson(request.issue) + "\"]}}",
+              false};
+    }
     return {encodeControlError(request.id, request.issue), false};
   }
 
@@ -1156,15 +1644,27 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
                                    static_cast<double>(nowMs) / 1000.0};
     return {encodeControlState(request.id, snapshot), false};
   }
+  case ControlMethod::GetCatalog:
+    return {"{\"id\":" + std::to_string(request.id) + ",\"result\":" + kGeneratorCatalogJson + "}",
+            false};
+  case ControlMethod::SetImage: {
+    const auto image = images_.putBase64(request.text, request.payload, request.secondaryText);
+    if (!image.ok || image.asset == nullptr) {
+      return {"{\"id\":" + std::to_string(request.id) + ",\"result\":{\"ok\":false,\"issues\":[\"" +
+                  escapeJson(image.issue) + "\"]}}",
+              false};
+    }
+    return {"{\"id\":" + std::to_string(request.id) +
+                ",\"result\":{\"ok\":true,\"issues\":[],\"hash\":\"" + image.asset->hash +
+                "\",\"name\":\"" + escapeJson(image.asset->name) + "\"}}",
+            false};
+  }
   case ControlMethod::ProposePatch:
     settingsChanged = runtime_.applyIntent(request.intent, TransitionSpec{});
     break;
-  case ControlMethod::ProposeSeed: {
-    SemanticIntent intent{};
-    intent.seed = request.text;
-    settingsChanged = runtime_.applyIntent(intent, TransitionSpec{});
+  case ControlMethod::ProposeSeed:
+    settingsChanged = runtime_.applySeed(request.text, TransitionSpec{});
     break;
-  }
   case ControlMethod::SetScene: {
     auto settings = runtime_.settings();
     settings.scene = sceneFromId(request.text);
@@ -1195,7 +1695,8 @@ ControlResult ControlService::dispatch(const ControlRequest& request,
     const bool didApply = result.ok;
     if (didApply) {
       timeline_ = result.timeline;
-      if (recordingActive_) {
+      const bool shouldRecord = recordingActive_;
+      if (shouldRecord) {
         recordedOperations_.push_back(
             {static_cast<double>(nowMs) / 1000.0, request.timelineOperation});
       }
@@ -1288,6 +1789,8 @@ bool ControlService::updateTimeline(const AnalyzedAudioFrame& audio, double nowS
 const PerformanceTimeline& ControlService::timeline() const { return timeline_; }
 
 const SchedulerState& ControlService::scheduler() const { return scheduler_; }
+
+const ImageStore& ControlService::images() const { return images_; }
 
 bool ControlService::recordingActive() const { return recordingActive_; }
 

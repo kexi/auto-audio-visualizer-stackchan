@@ -10,6 +10,12 @@ setup:
 configure:
     cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+catalog-generate:
+    node scripts/generate-stackchan-catalog.mjs
+
+catalog-check:
+    node scripts/generate-stackchan-catalog.mjs --check
+
 compile: configure
     cmake --build build/host
 
@@ -88,4 +94,4 @@ secrets:
 secrets-staged:
     gitleaks git --pre-commit --staged --redact
 
-all: format-check lint actions secrets test-host control-check snapshot-check web-test web-compile firmware
+all: catalog-check format-check lint actions secrets test-host control-check snapshot-check web-test web-compile firmware

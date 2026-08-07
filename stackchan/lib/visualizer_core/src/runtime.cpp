@@ -1,4 +1,5 @@
 #include "visualizer/runtime.hpp"
+#include "visualizer/semantic_patch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -89,6 +90,11 @@ RuntimeUpdate RuntimeController::update(const AnalyzedAudioFrame& audio, float d
 void RuntimeController::setSettings(Settings settings) {
   const std::string previousSeed = settings_.seed;
   settings_ = sanitizeSettings(std::move(settings));
+  const bool needsSemanticPatch = settings_.scene == SceneId::SemanticSynth &&
+                                  (patchJson_.empty() || previousSeed != settings_.seed);
+  if (needsSemanticPatch) {
+    patchJson_ = deriveSemanticPatchJson(settings_.seed);
+  }
   const bool needsInitialVariation = variation_.seed.empty();
   if (needsInitialVariation) {
     variation_ = generateVariation(settings_.seed);
@@ -105,11 +111,31 @@ void RuntimeController::setSettings(Settings settings) {
 
 void RuntimeController::shiftScene(int delta) {
   settings_.scene = shiftedScene(settings_.scene, delta);
+  const bool needsSemanticPatch = settings_.scene == SceneId::SemanticSynth && patchJson_.empty();
+  if (needsSemanticPatch) {
+    patchJson_ = deriveSemanticPatchJson(settings_.seed);
+  }
 }
 
 void RuntimeController::reroll(std::uint32_t entropy) {
   settings_.seed = generateReadableSeed(entropy);
+  const bool updatesSemanticPatch = settings_.scene == SceneId::SemanticSynth;
+  if (updatesSemanticPatch) {
+    patchJson_ = deriveSemanticPatchJson(settings_.seed);
+  }
   startVariationTransition(settings_.seed);
+}
+
+bool RuntimeController::applySeed(const std::string& seed, const TransitionSpec& transition) {
+  patchJson_ = deriveSemanticPatchJson(seed);
+  settings_.scene = SceneId::SemanticSynth;
+  settings_.seed = seed;
+  const double longestMilliseconds = std::max({transition.paletteMs, transition.parameterMs,
+                                               transition.modulationMs, transition.topologyMs});
+  const float durationSeconds =
+      static_cast<float>(std::clamp(longestMilliseconds / 1000.0, 0.001, 30.0));
+  startVariationTransition(seed, durationSeconds, transition.easing);
+  return true;
 }
 
 bool RuntimeController::applyIntent(const SemanticIntent& intent,
@@ -119,12 +145,11 @@ bool RuntimeController::applyIntent(const SemanticIntent& intent,
   if (!hasPatch && !hasSeed) {
     return false;
   }
-  if (hasPatch) {
-    patchJson_ = intent.patchJson;
-    settings_.scene = SceneId::SemanticSynth;
-  } else {
-    patchJson_.clear();
+  if (!hasPatch) {
+    return applySeed(intent.seed, transition);
   }
+  patchJson_ = intent.patchJson;
+  settings_.scene = SceneId::SemanticSynth;
   settings_.seed = hasSeed ? intent.seed : patchSeed(intent.patchJson);
   settings_ = sanitizeSettings(settings_);
   const std::string visualSeed = hasPatch ? patchSeed(intent.patchJson) : settings_.seed;

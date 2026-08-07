@@ -2,6 +2,7 @@
 #include "visualizer/control.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/scene_renderer.hpp"
+#include "visualizer/semantic_patch.hpp"
 #include "visualizer/settings.hpp"
 #include "visualizer/timeline.hpp"
 #include "visualizer/variation.hpp"
@@ -47,13 +48,46 @@ class CountingCanvas final : public stackchan::Canvas {
 public:
   [[nodiscard]] int width() const override { return 320; }
   [[nodiscard]] int height() const override { return 240; }
-  void clear(stackchan::Color) override { ++operations; }
-  void line(int, int, int, int, stackchan::Color, int) override { ++operations; }
-  void rectangle(int, int, int, int, stackchan::Color, bool) override { ++operations; }
-  void circle(int, int, int, stackchan::Color, bool) override { ++operations; }
-  void text(int, int, const std::string&, stackchan::Color) override { ++operations; }
+  void clear(stackchan::Color color) override {
+    ++operations;
+    mix(color.red, color.green, color.blue);
+  }
+  void line(int x1, int y1, int x2, int y2, stackchan::Color color, int) override {
+    ++operations;
+    mix(x1 + x2, y1 + y2, color.red);
+  }
+  void rectangle(int x, int y, int width, int height, stackchan::Color color, bool) override {
+    ++operations;
+    mix(x + width, y + height, color.green);
+  }
+  void circle(int x, int y, int radius, stackchan::Color color, bool) override {
+    ++operations;
+    mix(x + radius, y, color.blue);
+  }
+  void text(int x, int y, const std::string& value, stackchan::Color color) override {
+    ++operations;
+    mix(x + static_cast<int>(value.size()), y, color.red);
+  }
+  bool image(const stackchan::ImageAsset& asset, int x, int y, int width, int height) override {
+    ++operations;
+    ++imageOperations;
+    mix(x + width, y + height, static_cast<int>(asset.bytes.size()));
+    return true;
+  }
 
   int operations = 0;
+  int imageOperations = 0;
+  std::uint32_t fingerprint = 2166136261U;
+
+private:
+  void mix(int first, int second, int third) {
+    fingerprint ^= static_cast<std::uint32_t>(first);
+    fingerprint *= 16777619U;
+    fingerprint ^= static_cast<std::uint32_t>(second);
+    fingerprint *= 16777619U;
+    fingerprint ^= static_cast<std::uint32_t>(third);
+    fingerprint *= 16777619U;
+  }
 };
 
 } // namespace
@@ -111,6 +145,13 @@ int main() {
   assert(safeSettings.seed == "neon-prism-001");
   assert(stackchan::shiftedScene(stackchan::SceneId::Bars, -1) ==
          stackchan::SceneId::SemanticSynth);
+
+  // seedからのSemantic Patch導出が決定的で、共通のPatch検証ゲートを通ることを保証する。
+  const std::string derivedPatch = stackchan::deriveSemanticPatchJson("portable-neon-042");
+  assert(derivedPatch == stackchan::deriveSemanticPatchJson("portable-neon-042"));
+  const auto derivedPatchRequest = stackchan::parseControlRequest(
+      R"({"id":16,"method":"proposePatch","params":{"patch":)" + derivedPatch + "}}");
+  assert(derivedPatchRequest.ok);
 
   // 500ms間隔のタップが120 BPMの手動グリッドを生成することを保証する。
   stackchan::TempoTracker tempo;
@@ -211,6 +252,33 @@ int main() {
     assert(canvas.operations > 1);
   }
 
+  // 異なるSemantic PatchのOperator構成がCPU描画結果へ反映されることを保証する。
+  CountingCanvas firstSemanticCanvas;
+  CountingCanvas secondSemanticCanvas;
+  sceneRenderer.draw(firstSemanticCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F, stackchan::deriveSemanticPatchJson("portable-neon-042"));
+  sceneRenderer.draw(secondSemanticCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation,
+                     3.0F, 0.016F, 200.0F,
+                     stackchan::deriveSemanticPatchJson("different-operators-007"));
+  assert(firstSemanticCanvas.fingerprint != secondSemanticCanvas.fingerprint);
+
+  // base64画像をSHA-256で登録し、stamp PatchがCanvasの画像描画を呼ぶことを保証する。
+  stackchan::ImageStore imageStore;
+  const auto imageResult = imageStore.putBase64("pixel.png",
+                                                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0"
+                                                "lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                                                "image/png");
+  assert(imageResult.ok);
+  assert(imageResult.asset != nullptr);
+  assert(imageResult.asset->hash ==
+         "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460");
+  const std::string imagePatch =
+      R"({"schemaVersion":1,"seed":"image-patch","operators":[{"id":"src0","generatorId":"stamp","generatorVersion":1,"parameters":{"fit":"contain","scale":1,"invert":false}},{"id":"mod0","generatorId":"spin","generatorVersion":1,"parameters":{"rate":0.4,"wobble":0.2}},{"id":"mat0","generatorId":"neon","generatorVersion":1,"parameters":{"hue":200,"intensity":1.2}}],"routes":[],"palette":{"mode":"mono","hueOffset":200,"saturation":80,"lightness":55},"composition":{"symmetry":4,"scale":1,"speed":1},"qualityTier":"medium","images":{"src0.image":{"name":"pixel.png","hash":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"}}})";
+  CountingCanvas imageCanvas;
+  sceneRenderer.draw(imageCanvas, stackchan::SceneId::SemanticSynth, analyzed, variation, 3.0F,
+                     0.016F, 200.0F, imagePatch, &imageStore);
+  assert(imageCanvas.imageOperations == 1);
+
   // 秒・小節・外部トリガーのTimelineイベントが一度だけ順序通り発火することを保証する。
   stackchan::VisualEvent secondsEvent{};
   secondsEvent.id = "seconds";
@@ -266,6 +334,9 @@ int main() {
   assert(!invalidFactor.ok);
   const auto invalidRequest = stackchan::parseControlRequest(R"({"id":-1,"method":"getState"})");
   assert(!invalidRequest.ok);
+  const auto catalogRequest = stackchan::parseControlRequest(R"({"id":13,"method":"getCatalog"})");
+  assert(catalogRequest.ok);
+  assert(catalogRequest.method == stackchan::ControlMethod::GetCatalog);
 
   // 既存vj-ctlが送る入れ子JSONをTimelineOpへ変換し、patch JSONも欠落させないことを保証する。
   const std::string timelineJson =
@@ -287,6 +358,19 @@ int main() {
   assert(patchRequest.method == stackchan::ControlMethod::ProposePatch);
   assert(patchRequest.intent.seed == "direct-patch");
   assert(patchRequest.intent.patchJson.find("operators") != std::string::npos);
+  std::string unknownGeneratorPatch = minimalPatchJson("invalid-patch");
+  unknownGeneratorPatch.replace(unknownGeneratorPatch.find("\"grid\""), 6, "\"unknown-generator\"");
+  const std::string invalidPatchJson =
+      R"({"id":14,"method":"proposePatch","params":{"patch":)" + unknownGeneratorPatch + "}}";
+  const auto invalidPatchRequest = stackchan::parseControlRequest(invalidPatchJson);
+  assert(!invalidPatchRequest.ok);
+  assert(invalidPatchRequest.issue.find("not found in catalog") != std::string::npos);
+  std::string outOfRangePatch = minimalPatchJson("invalid-range");
+  outOfRangePatch.replace(outOfRangePatch.find("\"cells\":8"), 9, "\"cells\":128");
+  const auto outOfRangeRequest = stackchan::parseControlRequest(
+      R"({"id":15,"method":"proposePatch","params":{"patch":)" + outOfRangePatch + "}}");
+  assert(!outOfRangeRequest.ok);
+  assert(outOfRangeRequest.issue.find("outside its range") != std::string::npos);
   const auto fireRequest =
       stackchan::parseControlRequest(R"({"id":8,"method":"fireExternal","params":{"id":"drop"}})");
   assert(fireRequest.ok);
@@ -307,6 +391,9 @@ int main() {
   const auto directPatchResult = controlService.dispatch(patchRequest, analyzed, 3700, 44);
   assert(directPatchResult.settingsChanged);
   assert(controlRuntime.settings().seed == "direct-patch");
+  const auto invalidPatchResult = controlService.dispatch(invalidPatchRequest, analyzed, 3750, 45);
+  assert(invalidPatchResult.response.find("\"ok\":false") != std::string::npos);
+  assert(invalidPatchResult.response.find("\"issues\":[") != std::string::npos);
   controlRuntime.update({}, 2.0F, 0);
   assert(controlRuntime.variation().seed.rfind("patch-", 0) == 0);
 
@@ -348,6 +435,13 @@ int main() {
   assert(controlService.timeline().events.size() == 1);
   assert(controlService.timeline().events[0].id == "loaded-event");
   assert(controlRuntime.patchJson().find("record-seed") != std::string::npos);
+
+  // TypeScriptの正本から生成した全Generatorカタログを既存CLI形式で返すことを保証する。
+  const auto catalogResult = controlService.dispatch(catalogRequest, analyzed, 4200, 49);
+  assert(catalogResult.response.find("\"id\":13") != std::string::npos);
+  assert(catalogResult.response.find("\"id\":\"grid\"") != std::string::npos);
+  assert(catalogResult.response.find("\"id\":\"stamp\"") != std::string::npos);
+  assert(catalogResult.response.find("\"textures\":[\"image\"]") != std::string::npos);
 
   // 状態応答が既存CLIで扱えるid/result形式とテンポ・遷移状態を保持することを保証する。
   stackchan::TempoState controlTempo{};

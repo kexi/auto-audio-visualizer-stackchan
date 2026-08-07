@@ -86,6 +86,18 @@ public:
     canvas_.print(value.c_str());
   }
 
+  bool image(const stackchan::ImageAsset& asset, int x, int y, int width, int height) override {
+    const bool isJpeg = asset.mime == "image/jpeg" || asset.mime == "image/jpg";
+    if (isJpeg) {
+      return canvas_.drawJpg(asset.bytes.data(), asset.bytes.size(), x, y, width, height);
+    }
+    const bool isPng = asset.mime == "image/png";
+    if (isPng) {
+      return canvas_.drawPng(asset.bytes.data(), asset.bytes.size(), x, y, width, height);
+    }
+    return false;
+  }
+
 private:
   M5Canvas& canvas_;
 };
@@ -298,6 +310,6 @@ void loop() {
                         ? runtime.settings().fixedHue
                         : elapsedSeconds * 12.0F * runtime.variation().speed;
   sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
-                     deltaSeconds, hue);
+                     deltaSeconds, hue, runtime.patchJson(), &controlService.images());
   frameBuffer.pushSprite(0, 0);
 }

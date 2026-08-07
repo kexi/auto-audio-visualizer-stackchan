@@ -1,5 +1,7 @@
 #include "visualizer/scene_renderer.hpp"
 
+#include "visualizer/generated_catalog.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -25,6 +27,24 @@ Color sceneColor(const Variation& variation, float hue, float offset, float ligh
 }
 
 int scaled(float value) { return static_cast<int>(std::round(value)); }
+
+std::uint32_t fnv1a(const std::string& value) {
+  std::uint32_t hash = 2166136261U;
+  for (const unsigned char byte : value) {
+    hash ^= byte;
+    hash *= 16777619U;
+  }
+  return hash;
+}
+
+float hashUnit(std::uint32_t value) {
+  value ^= value >> 16U;
+  value *= 0x7FEB352DU;
+  value ^= value >> 15U;
+  value *= 0x846CA68BU;
+  value ^= value >> 16U;
+  return static_cast<float>(value >> 8U) / 16777216.0F;
+}
 
 } // namespace
 
@@ -76,7 +96,7 @@ Color hsl(float hue, float saturation, float lightness, std::uint8_t alpha) {
 
 void SceneRenderer::draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame& audio,
                          const Variation& variation, float elapsedSeconds, float deltaSeconds,
-                         float baseHue) {
+                         float baseHue, const std::string& patchJson, const ImageStore* images) {
   static_cast<void>(deltaSeconds);
   canvas.clear({0, 0, 0, 255});
   const float hue = wrapHue(baseHue + variation.hueOffset);
@@ -112,7 +132,7 @@ void SceneRenderer::draw(Canvas& canvas, SceneId scene, const AnalyzedAudioFrame
     drawAurora(canvas, audio, variation, elapsedSeconds, hue);
     break;
   case SceneId::SemanticSynth:
-    drawSemanticSynth(canvas, audio, variation, elapsedSeconds, hue);
+    drawSemanticSynth(canvas, audio, variation, elapsedSeconds, hue, patchJson, images);
     break;
   }
 }
@@ -421,35 +441,178 @@ void SceneRenderer::drawAurora(Canvas& canvas, const AnalyzedAudioFrame& audio,
   }
 }
 
+void SceneRenderer::compileSemanticPatch(const std::string& patchJson) {
+  const bool isCurrent = patchJson == compiledPatchJson_;
+  if (isCurrent) {
+    return;
+  }
+  compiledPatchJson_ = patchJson;
+  sourceHashes_.clear();
+  fieldHashes_.clear();
+  modifierHashes_.clear();
+  materialHashes_.clear();
+  semanticGraphHash_ = fnv1a(patchJson);
+  semanticImageHash_.clear();
+  usesImageSource_ = false;
+
+  std::size_t position = 0;
+  constexpr const char* kGeneratorKey = "\"generatorId\"";
+  while (position < patchJson.size()) {
+    const std::size_t key = patchJson.find(kGeneratorKey, position);
+    const bool hasKey = key != std::string::npos;
+    if (!hasKey) {
+      break;
+    }
+    const std::size_t colon =
+        patchJson.find(':', key + std::char_traits<char>::length(kGeneratorKey));
+    const std::size_t quote =
+        colon == std::string::npos ? std::string::npos : patchJson.find('"', colon + 1);
+    const std::size_t endQuote =
+        quote == std::string::npos ? std::string::npos : patchJson.find('"', quote + 1);
+    const bool hasValue = quote != std::string::npos && endQuote != std::string::npos;
+    if (!hasValue) {
+      break;
+    }
+    const std::string generatorId = patchJson.substr(quote + 1, endQuote - quote - 1);
+    for (std::size_t index = 0; index < kGeneratorDefinitionCount; ++index) {
+      const auto& definition = kGeneratorDefinitions[index];
+      const bool matches = generatorId == definition.id;
+      if (!matches) {
+        continue;
+      }
+      const std::uint32_t hash = fnv1a(generatorId);
+      const bool isImageSource = generatorId == "stamp";
+      usesImageSource_ = usesImageSource_ || isImageSource;
+      const std::string category = definition.category;
+      const bool isSource = category == "source";
+      const bool isField = category == "field";
+      const bool isModifier = category == "modifier";
+      if (isSource) {
+        sourceHashes_.push_back(hash);
+      } else if (isField) {
+        fieldHashes_.push_back(hash);
+      } else if (isModifier) {
+        modifierHashes_.push_back(hash);
+      } else {
+        materialHashes_.push_back(hash);
+      }
+      break;
+    }
+    position = endQuote + 1;
+  }
+
+  constexpr const char* kHashKey = "\"hash\"";
+  const std::size_t hashKey = patchJson.find(kHashKey);
+  const std::size_t hashColon =
+      hashKey == std::string::npos ? std::string::npos : patchJson.find(':', hashKey + 6U);
+  const std::size_t hashQuote =
+      hashColon == std::string::npos ? std::string::npos : patchJson.find('"', hashColon + 1U);
+  const std::size_t hashEnd =
+      hashQuote == std::string::npos ? std::string::npos : patchJson.find('"', hashQuote + 1U);
+  const bool hasImageHash = hashQuote != std::string::npos && hashEnd != std::string::npos;
+  if (hasImageHash) {
+    semanticImageHash_ = patchJson.substr(hashQuote + 1U, hashEnd - hashQuote - 1U);
+  }
+}
+
 void SceneRenderer::drawSemanticSynth(Canvas& canvas, const AnalyzedAudioFrame& audio,
-                                      const Variation& variation, float elapsedSeconds, float hue) {
-  const int cells = std::clamp(variation.symmetry * 2, 4, 16);
+                                      const Variation& variation, float elapsedSeconds, float hue,
+                                      const std::string& patchJson, const ImageStore* images) {
+  compileSemanticPatch(patchJson);
+  const ImageAsset* imageAsset =
+      images == nullptr || semanticImageHash_.empty() ? nullptr : images->get(semanticImageHash_);
+  const bool drawsImage = usesImageSource_ && imageAsset != nullptr;
+  if (drawsImage) {
+    canvas.image(*imageAsset, 0, 0, canvas.width(), canvas.height());
+  }
+  const std::uint32_t sourceHash =
+      sourceHashes_.empty() ? semanticGraphHash_ : sourceHashes_.front();
+  const std::uint32_t fieldHash =
+      fieldHashes_.empty() ? semanticGraphHash_ ^ 0xA341316CU : fieldHashes_.front();
+  const std::uint32_t modifierHash =
+      modifierHashes_.empty() ? semanticGraphHash_ ^ 0xC8013EA4U : modifierHashes_.front();
+  const std::uint32_t materialHash =
+      materialHashes_.empty() ? semanticGraphHash_ ^ 0xAD90777DU : materialHashes_.front();
+  const int sourceMode = static_cast<int>(sourceHash % 6U);
+  const int fieldMode = static_cast<int>(fieldHash % 4U);
+  const int modifierMode = static_cast<int>(modifierHash % 5U);
+  const int materialMode = static_cast<int>(materialHash % 5U);
+  const int densityOffset = static_cast<int>((semanticGraphHash_ >> 8U) % 5U);
+  const int cells = std::clamp(variation.symmetry * 2 + densityOffset, 5, 18);
   const float cellWidth = static_cast<float>(canvas.width()) / cells;
   const float cellHeight = static_cast<float>(canvas.height()) / cells;
   for (int y = 0; y < cells; ++y) {
     for (int x = 0; x < cells; ++x) {
       const std::uint32_t index = static_cast<std::uint32_t>(y * cells + x);
-      const float random = variation.random(index);
+      const float random = hashUnit(semanticGraphHash_ ^ index * 0x9E3779B9U);
+      float unitX = (x + 0.5F) / cells - 0.5F;
+      float unitY = (y + 0.5F) / cells - 0.5F;
+      const float fieldPhase = elapsedSeconds * variation.speed + audio.mid * kPi;
+      if (fieldMode == 0) {
+        unitX += std::sin(unitY * 12.0F + fieldPhase) * (0.03F + audio.bass * 0.08F);
+      } else if (fieldMode == 1) {
+        unitY += std::cos(unitX * 14.0F - fieldPhase) * (0.03F + audio.treble * 0.07F);
+      } else if (fieldMode == 2) {
+        const float angle = std::atan2(unitY, unitX) + fieldPhase * 0.18F;
+        const float radius = std::sqrt(unitX * unitX + unitY * unitY);
+        unitX = std::cos(angle + radius * 4.0F) * radius;
+        unitY = std::sin(angle + radius * 4.0F) * radius;
+      } else {
+        unitX += (random - 0.5F) * variation.wobble * 0.14F;
+        unitY += (hashUnit(fieldHash ^ index) - 0.5F) * variation.wobble * 0.14F;
+      }
+
+      const bool mirrorsX = modifierMode == 0 || modifierMode == 3;
+      const bool mirrorsY = modifierMode == 1 || modifierMode == 3;
+      if (mirrorsX) {
+        unitX = std::abs(unitX);
+      }
+      if (mirrorsY) {
+        unitY = std::abs(unitY);
+      }
       const float oscillator =
           0.5F + 0.5F * std::sin(elapsedSeconds * variation.speed * (1.0F + random * 3.0F) +
-                                 index * 0.31F + audio.tempo.barPhase * kPi);
-      const float modulation =
-          clampUnit(oscillator * 0.55F + audio.bass * 0.3F + audio.treble * random * 0.25F);
-      const Color color =
-          sceneColor(variation, hue, random * variation.hueSpread, 18.0F + modulation * 62.0F);
-      const int centerX = scaled((x + 0.5F) * cellWidth);
-      const int centerY = scaled((y + 0.5F) * cellHeight);
+                                 (unitX + unitY) * 14.0F + audio.tempo.barPhase * kPi);
+      float sourceValue = oscillator;
+      if (sourceMode == 0) {
+        sourceValue = 1.0F - clampUnit(std::min(std::abs(unitX), std::abs(unitY)) * cells * 2.0F);
+      } else if (sourceMode == 1) {
+        sourceValue = clampUnit(1.0F - std::sqrt(unitX * unitX + unitY * unitY) * 1.8F);
+      } else if (sourceMode == 2) {
+        sourceValue = 0.5F + 0.5F * std::sin((unitX * 13.0F + unitY * 9.0F) + fieldPhase);
+      } else if (sourceMode == 3) {
+        sourceValue = ((x + y) & 1) == 0 ? 0.9F : 0.15F;
+      } else if (sourceMode == 4) {
+        sourceValue = random;
+      }
+      const float imageMix = drawsImage ? 0.32F : 1.0F;
+      const float modulation = clampUnit(sourceValue * 0.55F * imageMix + audio.bass * 0.3F +
+                                         audio.treble * random * 0.25F);
+      const float materialHue = materialMode == 0   ? random * variation.hueSpread
+                                : materialMode == 1 ? unitX * 180.0F
+                                : materialMode == 2 ? unitY * 220.0F
+                                : materialMode == 3 ? oscillator * 300.0F
+                                                    : (unitX + unitY) * 180.0F;
+      const float materialLightness =
+          materialMode == 4 ? 28.0F + (1.0F - modulation) * 52.0F : 18.0F + modulation * 62.0F;
+      const Color color = sceneColor(variation, hue, materialHue, materialLightness);
+      const int centerX = scaled((unitX + 0.5F) * canvas.width());
+      const int centerY = scaled((unitY + 0.5F) * canvas.height());
       const int radius = std::max(1, scaled(std::min(cellWidth, cellHeight) * 0.48F * modulation));
-      const bool useCircle = (variation.variant + x + y) % 2 == 0;
+      const bool useCircle = (modifierMode + sourceMode + x + y) % 2 == 0;
       if (useCircle) {
-        canvas.circle(centerX, centerY, radius, color, variation.shape < 0.7F);
+        canvas.circle(centerX, centerY, radius, color, modifierMode != 4);
       } else {
         canvas.rectangle(centerX - radius, centerY - radius, radius * 2, radius * 2, color,
-                         variation.shape < 0.7F);
+                         modifierMode != 4);
       }
     }
   }
-  canvas.text(4, 4, "SYNTH", sceneColor(variation, hue, 0.0F, 85.0F));
+  const std::string label = sourceHashes_.empty()
+                                ? "SYNTH"
+                                : "SYNTH " + std::to_string(sourceHashes_.size()) + "/" +
+                                      std::to_string(modifierHashes_.size());
+  canvas.text(4, 4, label, sceneColor(variation, hue, 0.0F, 85.0F));
 }
 
 } // namespace stackchan

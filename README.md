@@ -23,6 +23,7 @@ just test-host     # 実機不要の C++ テスト
 just control-check # ホスト上で外部制御とTimeline発火を結合テスト
 just firmware      # CoreS3 ファームウェアをクロスビルド（実機不要）
 just all           # format/lint/security/test/Web/host/CoreS3 buildを一括検証
+just catalog-generate # TypeScriptのGeneratorカタログからCoreS3用ヘッダーを再生成
 ```
 
 direnv を使わない場合も、`nix develop --command just all` のように実行できます。
@@ -80,7 +81,8 @@ node scripts/vj-ctl.mjs state
 | look gacha・オートサイクル | 対応 | 対応 | seedと設定をNVSへ保存 |
 | Stack-chan本体連動 | ― | 対応 | タッチ、RGB、サーボ |
 | Semantic Synth CPUバックエンド | 対応 | 対応 | seed/Patch JSON由来の決定的CPU表現 |
-| Semantic Synth 100 Generator / GLSL Patch | ブラウザ版のみ | 未対応 | WebGL2依存のため別バックエンドが必要 |
+| Semantic Synth 105 Generator catalog / Patch制御 | 対応 | 対応 | TypeScript正本から生成した同一catalogを返し、Patchを受理 |
+| Semantic Synth 105 Generator描画 | CPU近似 | CPU近似 | WebGL2 GLSLの完全一致ではなく決定論的なCoreS3向け描画 |
 | Timelineデータモデル・scheduler | 対応 | 対応 | 秒・小節・外部anchorを実行ループへ接続済み |
 | 外部操作 | stdio対応 | USB Serial対応 | state、Patch、seed、scene、tempo、Timeline |
 | WebSocket CLI | 対応 | 対応 | `just host-bridge` / `just device-bridge DEVICE` |

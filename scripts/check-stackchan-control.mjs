@@ -37,3 +37,36 @@ const hasRecordingShape =
 if (!hasRecordingShape) {
   throw new Error('recording JSON is incomplete');
 }
+
+const catalog = byId.get(8)?.result;
+const hasCatalog =
+  Array.isArray(catalog) &&
+  catalog.length === 105 &&
+  catalog.some((definition) => definition.id === 'grid') &&
+  catalog.some((definition) => definition.id === 'stamp' && definition.textures?.includes('image'));
+if (!hasCatalog) {
+  throw new Error('generator catalog is incomplete');
+}
+
+const derivedState = byId.get(10)?.result;
+const hasDerivedPatch =
+  derivedState?.seed === 'portable-neon-042' &&
+  derivedState?.currentPatch?.seed === 'portable-neon-042' &&
+  Array.isArray(derivedState.currentPatch.operators) &&
+  derivedState.currentPatch.operators.length >= 3;
+if (!hasDerivedPatch) {
+  throw new Error('proposeSeed did not derive a semantic patch');
+}
+
+const imageResult = byId.get(15)?.result;
+const hasImage =
+  imageResult?.ok === true &&
+  imageResult.name === 'pixel.png' &&
+  imageResult.hash === '431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460';
+if (!hasImage) {
+  throw new Error('setImage did not store the SHA-256 addressed image');
+}
+const imagePatch = byId.get(17)?.result?.currentPatch;
+if (imagePatch?.images?.['src0.image']?.hash !== imageResult.hash) {
+  throw new Error('image Patch was not applied');
+}
