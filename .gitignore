@@ -27,6 +27,13 @@ pnpm-debug.log*
 result
 result-*
 
+# C++ / PlatformIO
+build
+.pio
+.platformio
+.cache
+compile_commands.json
+
 # Cloudflare / wrangler のローカル状態（DO の storage・キャッシュ）
 .wrangler
 

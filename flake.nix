@@ -12,14 +12,30 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        # ヘッドレスブラウザでの検証用シェル。
-        # Playwright が自前でダウンロードする Chromium は共有ライブラリ
-        # (libnspr4.so 等) を見つけられないため、nix 側の chromium と
-        # 必要な system library を供給する。
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
+          packages = (with pkgs; [
+            actionlint
+            clang-tools
+            cmake
+            direnv
+            fish
+            findutils
+            git
+            gitleaks
+            just
+            lefthook
+            llvmPackages.clang
+            ninja
+            nix-direnv
+            nodejs_24
+            pinact
+            platformio
+            pkg-config
+            pnpm_10
+            ripgrep
+            SDL2
+          ]) ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
             chromium
-            # headless Chrome が要求する system library 群
             nss
             nspr
             atk
@@ -41,17 +57,19 @@
             expat
             glib
             gtk3
-          ];
+          ]);
 
           shellHook = ''
-            # Playwright に自前の Chromium をダウンロードさせない。
-            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-            # nix が提供する Chromium の実行パス。
-            # 注意: Playwright はこの環境変数を自動では参照しない。実測で、
-            # 環境変数だけに頼った chromium.launch() は失敗する。
-            # テスト側で launch({ executablePath: process.env.CHROMIUM_BIN }) の
-            # ように明示的に渡すこと。
-            export CHROMIUM_BIN="${pkgs.chromium}/bin/chromium"
+            export PLATFORMIO_CORE_DIR="$PWD/.platformio"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export CHROMIUM_BIN="${pkgs.chromium}/bin/chromium"
+            ''}
+
+            # devShell に入るたび、リポジトリ管理の pre-commit hook を同期する。
+            if git rev-parse --git-dir >/dev/null 2>&1; then
+              lefthook install >/dev/null
+            fi
           '';
         };
       });

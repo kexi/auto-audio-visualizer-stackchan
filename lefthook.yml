@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      run: just format-check
+    lint:
+      run: just lint
+    actions:
+      glob: '.github/workflows/*.{yml,yaml}'
+      run: just actions
+    secrets:
+      run: just secrets-staged

@@ -1,5 +1,33 @@
 # VJ Overlay Tool
 
+> **CoreS3 移行中:** ブラウザ版を参照実装として残しながら、M5Stack Stack-chan / CoreS3
+> 向けの C++ 実装へ段階的に移行しています。実機がなくても 320×240 の SDL2
+> シミュレーターとホストテストを利用できます。
+
+## CoreS3 ホスト開発
+
+Nix と direnv を利用すると、Node.js、pnpm、CMake、SDL2、PlatformIO、just、
+lefthook、gitleaks、pinact、actionlint が同じ devShell に揃います。
+ビルドや検証に使うツールはすべて `flake.nix` から供給されるため、個別の
+グローバルインストールは不要です。
+
+```bash
+direnv allow       # devShell 読み込み時に pre-commit hook も自動設定
+just setup         # 初回の JS 依存インストール
+just compile       # ハードウェア非依存 C++ コアとホストシミュレーターをビルド
+just run           # 320x240 CoreS3 ホストシミュレーターを起動
+just test-host     # 実機不要の C++ テスト
+just firmware      # CoreS3 ファームウェアをクロスビルド（実機不要）
+just all           # format/lint/security/test/build をまとめて検証
+```
+
+direnv を使わない場合も、`nix develop --command just all` のように実行できます。
+
+`stackchan/lib/visualizer_core` はハードウェアに依存せず、ホストと CoreS3
+ファームウェアの両方から利用します。現在の CoreS3 実装は内蔵マイクの RMS
+レベルを顔とバーへ反映する最小構成です。サーボや Stack-chan BSP との統合は、
+実機確認が可能になった段階でこの境界の外側へ追加できます。
+
 ブラウザだけで動く、音に反応するフルスクリーン・ビジュアルツールです。マイク / ライン入力 / ループバック（デスクトップ音声）を解析し、なめらかで音楽に反応するビジュアルを描画します。OBS のブラウザソースや、プロジェクター用のフルスクリーンブラウザに常駐させて使う前提で設計しています。
 
 - **Canvas 2D を手書き**で描画（three.js / p5 などの外部描画ライブラリは不使用）
