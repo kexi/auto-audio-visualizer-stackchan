@@ -29,3 +29,6 @@ result-*
 
 # Cloudflare / wrangler のローカル状態（DO の storage・キャッシュ）
 .wrangler
+
+# VJ 操縦 CLI (vj-gen.mjs / vj-tweak.mjs) の catalog キャッシュ
+scripts/.vj-catalog-cache.json
