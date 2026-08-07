@@ -1,0 +1,7 @@
+{"id":1,"method":"proposePatch","params":{"patch":{"schemaVersion":1,"seed":"host-patch","operators":[{"id":"src0","generatorId":"grid","generatorVersion":1,"parameters":{"cells":8,"thickness":0.08}},{"id":"mod0","generatorId":"spin","generatorVersion":1,"parameters":{"rate":0.4,"wobble":0.2}},{"id":"mat0","generatorId":"neon","generatorVersion":1,"parameters":{"hue":200,"intensity":1.2}}],"routes":[],"palette":{"mode":"mono","hueOffset":200,"saturation":80,"lightness":55},"composition":{"symmetry":4,"scale":1,"speed":1},"qualityTier":"medium"}}}
+{"id":2,"method":"applyTimelineOp","params":{"op":{"op":"add","event":{"id":"host-drop","start":{"kind":"external","id":"drop"},"duration":{"kind":"untilNext"},"intent":{"seed":"timeline-seed"},"transition":{"paletteMs":1200,"parameterMs":800,"modulationMs":1000,"topologyMs":2000,"easing":"easeInOut"},"confidence":1,"locked":false}}}}
+{"id":3,"method":"fireExternal","params":{"id":"drop"}}
+{"id":4,"method":"getState"}
+{"id":5,"method":"startRecording"}
+{"id":6,"method":"applyTimelineOp","params":{"op":{"op":"setLockedUntil","sec":30}}}
+{"id":7,"method":"stopRecording"}

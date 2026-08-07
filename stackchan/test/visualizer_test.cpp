@@ -17,6 +17,32 @@ bool isNear(float actual, float expected, float tolerance) {
   return std::abs(actual - expected) <= tolerance;
 }
 
+std::string minimalPatchJson(const std::string& seed) {
+  return "{\"schemaVersion\":1,\"seed\":\"" + seed +
+         "\",\"operators\":[{\"id\":\"src0\",\"generatorId\":\"grid\","
+         "\"generatorVersion\":1,\"parameters\":{\"cells\":8,\"thickness\":0.08}},"
+         "{\"id\":\"mod0\",\"generatorId\":\"spin\",\"generatorVersion\":1,"
+         "\"parameters\":{\"rate\":0.4,\"wobble\":0.2}},{\"id\":\"mat0\","
+         "\"generatorId\":\"neon\",\"generatorVersion\":1,\"parameters\":{"
+         "\"hue\":200,\"intensity\":1.2}}],\"routes\":[],\"palette\":{\"mode\":"
+         "\"mono\",\"hueOffset\":200,\"saturation\":80,\"lightness\":55},"
+         "\"composition\":{\"symmetry\":4,\"scale\":1,\"speed\":1},"
+         "\"qualityTier\":\"medium\"}";
+}
+
+std::string quoteJsonString(const std::string& value) {
+  std::string output = "\"";
+  for (const char character : value) {
+    const bool needsEscape = character == '\\' || character == '"';
+    if (needsEscape) {
+      output.push_back('\\');
+    }
+    output.push_back(character);
+  }
+  output.push_back('"');
+  return output;
+}
+
 class CountingCanvas final : public stackchan::Canvas {
 public:
   [[nodiscard]] int width() const override { return 320; }
@@ -147,6 +173,35 @@ int main() {
   assert(!transitionRuntime.variationTransitionActive());
   assert(transitionRuntime.variation().seed == transitionRuntime.settings().seed);
 
+  // TimelineのPatch intentが決定的なCPU表現へ変換され、指定時間で遷移することを保証する。
+  stackchan::SemanticIntent patchIntent{};
+  patchIntent.patchJson = R"({"schemaVersion":1,"seed":"semantic-patch"})";
+  stackchan::TransitionSpec linearTransition{};
+  linearTransition.paletteMs = 2000.0;
+  linearTransition.parameterMs = 2000.0;
+  linearTransition.modulationMs = 2000.0;
+  linearTransition.topologyMs = 2000.0;
+  linearTransition.easing = stackchan::TransitionEasing::Linear;
+  const bool didApplyPatch = transitionRuntime.applyIntent(patchIntent, linearTransition);
+  assert(didApplyPatch);
+  assert(transitionRuntime.settings().scene == stackchan::SceneId::SemanticSynth);
+  assert(transitionRuntime.settings().seed.rfind("patch-", 0) == 0);
+  assert(transitionRuntime.patchJson() == patchIntent.patchJson);
+  transitionRuntime.update({}, 1.0F, 0);
+  assert(transitionRuntime.variationTransitionActive());
+  transitionRuntime.update({}, 1.0F, 0);
+  assert(!transitionRuntime.variationTransitionActive());
+
+  // 同じPatch seedでもoperator JSONが異なればCPU表現が変わることを保証する。
+  stackchan::RuntimeController alternatePatchRuntime;
+  stackchan::SemanticIntent alternatePatchIntent{};
+  alternatePatchIntent.seed = "semantic-patch";
+  alternatePatchIntent.patchJson =
+      R"({"schemaVersion":1,"seed":"semantic-patch","operators":[{"id":"different"}]})";
+  alternatePatchRuntime.applyIntent(alternatePatchIntent, linearTransition);
+  alternatePatchRuntime.update({}, 2.0F, 0);
+  assert(alternatePatchRuntime.variation().seed != transitionRuntime.variation().seed);
+
   // 登録された11シーンすべてがCoreS3互換Canvasへ描画命令を発行することを保証する。
   stackchan::SceneRenderer sceneRenderer;
   for (std::size_t index = 0; index < stackchan::sceneCount(); ++index) {
@@ -199,17 +254,114 @@ int main() {
       R"({"id":2,"method":"proposeSeed","params":{"seed":"日本語🎛️"}})");
   assert(seedRequest.ok);
   assert(seedRequest.text == "日本語🎛️");
+  const auto escapedSeedRequest = stackchan::parseControlRequest(
+      R"({"id":3,"method":"proposeSeed","params":{"seed":"\u65e5\u672c\ud83c\udf9b"}})");
+  assert(escapedSeedRequest.ok);
+  assert(escapedSeedRequest.text == "日本🎛");
+  const auto invalidDelta =
+      stackchan::parseControlRequest(R"({"id":4,"method":"shiftScene","params":{"delta":1.5}})");
+  assert(!invalidDelta.ok);
+  const auto invalidFactor =
+      stackchan::parseControlRequest(R"({"id":5,"method":"tempoMultiply","params":{"factor":3}})");
+  assert(!invalidFactor.ok);
   const auto invalidRequest = stackchan::parseControlRequest(R"({"id":-1,"method":"getState"})");
   assert(!invalidRequest.ok);
+
+  // 既存vj-ctlが送る入れ子JSONをTimelineOpへ変換し、patch JSONも欠落させないことを保証する。
+  const std::string timelineJson =
+      R"({"id":6,"method":"applyTimelineOp","params":{"op":{"op":"add","event":{"id":"ctl-1","start":{"kind":"external","id":"drop"},"duration":{"kind":"untilNext"},"intent":{"seed":"rainy-qilou","patch":)" +
+      minimalPatchJson("patch-seed") +
+      R"(},"transition":{"paletteMs":1200,"parameterMs":800,"modulationMs":1000,"topologyMs":2000,"easing":"easeInOut"},"confidence":1,"locked":false}}}})";
+  const auto timelineRequest = stackchan::parseControlRequest(timelineJson);
+  assert(timelineRequest.ok);
+  assert(timelineRequest.method == stackchan::ControlMethod::ApplyTimelineOp);
+  assert(timelineRequest.timelineOperation.kind == stackchan::TimelineOpKind::Add);
+  assert(timelineRequest.timelineOperation.event.start.kind == stackchan::AnchorKind::External);
+  assert(timelineRequest.timelineOperation.event.intent.seed == "rainy-qilou");
+  assert(timelineRequest.timelineOperation.event.intent.patchJson.find("patch-seed") !=
+         std::string::npos);
+  const std::string patchJson = R"({"id":7,"method":"proposePatch","params":{"patch":)" +
+                                minimalPatchJson("direct-patch") + "}}";
+  const auto patchRequest = stackchan::parseControlRequest(patchJson);
+  assert(patchRequest.ok);
+  assert(patchRequest.method == stackchan::ControlMethod::ProposePatch);
+  assert(patchRequest.intent.seed == "direct-patch");
+  assert(patchRequest.intent.patchJson.find("operators") != std::string::npos);
+  const auto fireRequest =
+      stackchan::parseControlRequest(R"({"id":8,"method":"fireExternal","params":{"id":"drop"}})");
+  assert(fireRequest.ok);
+  assert(fireRequest.text == "drop");
+
+  // ホストとCoreS3が同じControlServiceでTimeline登録・外部発火・Patch適用することを保証する。
+  stackchan::AudioAnalyzer controlAnalyzer;
+  stackchan::RuntimeController controlRuntime;
+  stackchan::ControlService controlService(controlRuntime, controlAnalyzer);
+  const auto addResult = controlService.dispatch(timelineRequest, analyzed, 3500, 42);
+  assert(addResult.response.find("\"ok\":true") != std::string::npos);
+  assert(controlService.timeline().events.size() == 1);
+  const auto fireResult = controlService.dispatch(fireRequest, analyzed, 3600, 43);
+  assert(fireResult.settingsChanged);
+  assert(controlRuntime.settings().scene == stackchan::SceneId::SemanticSynth);
+  assert(controlRuntime.settings().seed == "rainy-qilou");
+  assert(controlRuntime.patchJson().find("patch-seed") != std::string::npos);
+  const auto directPatchResult = controlService.dispatch(patchRequest, analyzed, 3700, 44);
+  assert(directPatchResult.settingsChanged);
+  assert(controlRuntime.settings().seed == "direct-patch");
+  controlRuntime.update({}, 2.0F, 0);
+  assert(controlRuntime.variation().seed.rfind("patch-", 0) == 0);
+
+  // 録画開始からTimeline操作の記録・停止までを既存vj-ctlの応答形式で保持することを保証する。
+  const auto startRecordingRequest =
+      stackchan::parseControlRequest(R"({"id":9,"method":"startRecording"})");
+  assert(startRecordingRequest.ok);
+  const auto startRecordingResult =
+      controlService.dispatch(startRecordingRequest, analyzed, 3800, 45);
+  assert(startRecordingResult.response.find("\"ok\":true") != std::string::npos);
+  assert(controlService.recordingActive());
+  const auto recordedOperationRequest = stackchan::parseControlRequest(
+      R"({"id":10,"method":"applyTimelineOp","params":{"op":{"op":"setLockedUntil","sec":12}}})");
+  const auto recordedOperationResult =
+      controlService.dispatch(recordedOperationRequest, analyzed, 3900, 46);
+  assert(recordedOperationResult.response.find("\"ok\":true") != std::string::npos);
+  const auto stopRecordingRequest =
+      stackchan::parseControlRequest(R"({"id":11,"method":"stopRecording"})");
+  const auto stopRecordingResult =
+      controlService.dispatch(stopRecordingRequest, analyzed, 4000, 47);
+  assert(!controlService.recordingActive());
+  assert(stopRecordingResult.response.find("stackchan-core-1") != std::string::npos);
+  assert(stopRecordingResult.response.find("setLockedUntil") != std::string::npos);
+
+  // ブラウザ互換recordingからTimelineと初期Patchを復元することを保証する。
+  const std::string loadEvent =
+      R"({"id":"loaded-event","start":{"kind":"seconds","atSec":20},"duration":{"kind":"untilNext"},"intent":{"seed":"loaded-seed"},"transition":{"paletteMs":1200,"parameterMs":800,"modulationMs":1000,"topologyMs":2000,"easing":"easeInOut"},"confidence":1,"locked":false})";
+  const std::string recordingJson =
+      R"({"schemaVersion":1,"engineVersion":"web-1","sessionSeed":"record-seed","initialPatch":)" +
+      minimalPatchJson("record-seed") + R"(,"ops":[{"atSec":0,"op":{"op":"add","event":)" +
+      loadEvent + R"(}}],"fired":[]})";
+  const std::string loadRequestJson = R"({"id":12,"method":"loadRecording","params":{"json":)" +
+                                      quoteJsonString(recordingJson) + "}}";
+  const auto loadRequest = stackchan::parseControlRequest(loadRequestJson);
+  assert(loadRequest.ok);
+  const auto loadResult = controlService.dispatch(loadRequest, analyzed, 4100, 48);
+  assert(loadResult.settingsChanged);
+  assert(loadResult.response.find("\"ok\":true") != std::string::npos);
+  assert(controlService.timeline().events.size() == 1);
+  assert(controlService.timeline().events[0].id == "loaded-event");
+  assert(controlRuntime.patchJson().find("record-seed") != std::string::npos);
 
   // 状態応答が既存CLIで扱えるid/result形式とテンポ・遷移状態を保持することを保証する。
   stackchan::TempoState controlTempo{};
   controlTempo.bpm = 120.0F;
   controlTempo.locked = true;
-  const stackchan::ControlSnapshot controlSnapshot{&runtime.settings(), &controlTempo, true, 3.5};
+  const stackchan::ControlSnapshot controlSnapshot{
+      &runtime.settings(),  &controlTempo, &timeline, &scheduler,
+      &runtime.patchJson(), true,          false,     3.5};
   const std::string stateResponse = stackchan::encodeControlState(7, controlSnapshot);
   assert(stateResponse.find("\"id\":7") != std::string::npos);
   assert(stateResponse.find("\"bpm\":120.000") != std::string::npos);
   assert(stateResponse.find("\"transitionActive\":true") != std::string::npos);
+  assert(stateResponse.find("\"timeline\":") != std::string::npos);
+  assert(stateResponse.find("\"firedIds\":[\"seconds\",\"bar\",\"external\"]") !=
+         std::string::npos);
   return 0;
 }

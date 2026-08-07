@@ -7,8 +7,6 @@
 namespace stackchan {
 namespace {
 
-constexpr float kVariationTransitionDurationSeconds = 1.2F;
-
 float interpolate(float from, float to, float progress) { return from + (to - from) * progress; }
 
 float interpolateHue(float from, float to, float progress) {
@@ -26,20 +24,34 @@ float interpolateHue(float from, float to, float progress) {
 }
 
 Variation blendVariation(const Variation& from, const Variation& to, float progress) {
-  const float clamped = std::clamp(progress, 0.0F, 1.0F);
-  const float eased = clamped * clamped * (3.0F - 2.0F * clamped);
-  const bool usesTargetDiscreteValues = eased >= 0.5F;
+  const float clampedProgress = std::clamp(progress, 0.0F, 1.0F);
+  const bool usesTargetDiscreteValues = clampedProgress >= 0.5F;
   Variation output = usesTargetDiscreteValues ? to : from;
-  output.hueOffset = interpolateHue(from.hueOffset, to.hueOffset, eased);
-  output.hueSpread = interpolate(from.hueSpread, to.hueSpread, eased);
-  output.saturation = interpolate(from.saturation, to.saturation, eased);
-  output.lightness = interpolate(from.lightness, to.lightness, eased);
-  output.speed = interpolate(from.speed, to.speed, eased);
-  output.density = interpolate(from.density, to.density, eased);
-  output.scale = interpolate(from.scale, to.scale, eased);
-  output.wobble = interpolate(from.wobble, to.wobble, eased);
-  output.shape = interpolate(from.shape, to.shape, eased);
+  output.hueOffset = interpolateHue(from.hueOffset, to.hueOffset, clampedProgress);
+  output.hueSpread = interpolate(from.hueSpread, to.hueSpread, clampedProgress);
+  output.saturation = interpolate(from.saturation, to.saturation, clampedProgress);
+  output.lightness = interpolate(from.lightness, to.lightness, clampedProgress);
+  output.speed = interpolate(from.speed, to.speed, clampedProgress);
+  output.density = interpolate(from.density, to.density, clampedProgress);
+  output.scale = interpolate(from.scale, to.scale, clampedProgress);
+  output.wobble = interpolate(from.wobble, to.wobble, clampedProgress);
+  output.shape = interpolate(from.shape, to.shape, clampedProgress);
   return output;
+}
+
+std::string patchSeed(const std::string& patchJson) {
+  std::uint32_t hash = 2166136261U;
+  for (const unsigned char byte : patchJson) {
+    hash ^= byte;
+    hash *= 16777619U;
+  }
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string seed = "patch-00000000";
+  for (int index = 0; index < 8; ++index) {
+    const int shift = (7 - index) * 4;
+    seed[6 + static_cast<std::size_t>(index)] = kHex[(hash >> shift) & 0x0FU];
+  }
+  return seed;
 }
 
 } // namespace
@@ -100,10 +112,37 @@ void RuntimeController::reroll(std::uint32_t entropy) {
   startVariationTransition(settings_.seed);
 }
 
-void RuntimeController::startVariationTransition(const std::string& seed) {
+bool RuntimeController::applyIntent(const SemanticIntent& intent,
+                                    const TransitionSpec& transition) {
+  const bool hasPatch = !intent.patchJson.empty();
+  const bool hasSeed = !intent.seed.empty();
+  if (!hasPatch && !hasSeed) {
+    return false;
+  }
+  if (hasPatch) {
+    patchJson_ = intent.patchJson;
+    settings_.scene = SceneId::SemanticSynth;
+  } else {
+    patchJson_.clear();
+  }
+  settings_.seed = hasSeed ? intent.seed : patchSeed(intent.patchJson);
+  settings_ = sanitizeSettings(settings_);
+  const std::string visualSeed = hasPatch ? patchSeed(intent.patchJson) : settings_.seed;
+  const double longestMilliseconds = std::max({transition.paletteMs, transition.parameterMs,
+                                               transition.modulationMs, transition.topologyMs});
+  const float durationSeconds =
+      static_cast<float>(std::clamp(longestMilliseconds / 1000.0, 0.001, 30.0));
+  startVariationTransition(visualSeed, durationSeconds, transition.easing);
+  return true;
+}
+
+void RuntimeController::startVariationTransition(const std::string& seed, float durationSeconds,
+                                                 TransitionEasing easing) {
   previousVariation_ = renderedVariation_;
   variation_ = generateVariation(seed);
   variationTransitionSeconds_ = 0.0F;
+  variationTransitionDurationSeconds_ = std::max(durationSeconds, 0.001F);
+  variationTransitionEasing_ = easing;
   variationTransitionActive_ = previousVariation_.seed != variation_.seed;
   const bool isAlreadyAtTarget = !variationTransitionActive_;
   if (isAlreadyAtTarget) {
@@ -116,8 +155,13 @@ void RuntimeController::updateVariationTransition(float deltaSeconds) {
     return;
   }
   variationTransitionSeconds_ += std::max(0.0F, deltaSeconds);
-  const float progress = variationTransitionSeconds_ / kVariationTransitionDurationSeconds;
-  renderedVariation_ = blendVariation(previousVariation_, variation_, progress);
+  const float progress = variationTransitionSeconds_ / variationTransitionDurationSeconds_;
+  const float clampedProgress = std::clamp(progress, 0.0F, 1.0F);
+  const float blendProgress =
+      variationTransitionEasing_ == TransitionEasing::Linear
+          ? clampedProgress
+          : clampedProgress * clampedProgress * (3.0F - 2.0F * clampedProgress);
+  renderedVariation_ = blendVariation(previousVariation_, variation_, blendProgress);
   const bool didFinish = progress >= 1.0F;
   if (didFinish) {
     renderedVariation_ = variation_;
@@ -128,6 +172,8 @@ void RuntimeController::updateVariationTransition(float deltaSeconds) {
 const Settings& RuntimeController::settings() const { return settings_; }
 
 const Variation& RuntimeController::variation() const { return renderedVariation_; }
+
+const std::string& RuntimeController::patchJson() const { return patchJson_; }
 
 bool RuntimeController::variationTransitionActive() const { return variationTransitionActive_; }
 

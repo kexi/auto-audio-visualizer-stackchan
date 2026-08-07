@@ -31,9 +31,6 @@ jobs:
       - name: Run all checks
         run: nix develop --command just all
 
-      - name: Cross-compile CoreS3 firmware
-        run: nix develop --command just firmware
-
   gpu-test:
     name: GPU parity test
     runs-on: ubuntu-latest

@@ -1,8 +1,12 @@
 #include "visualizer/audio.hpp"
+#include "visualizer/control.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/scene_renderer.hpp"
 
 #include <SDL.h>
+
+#include <poll.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +26,13 @@ constexpr std::uint32_t kSampleRate = 16000;
 struct CommandLineOptions {
   std::string screenshotPath;
   stackchan::SceneId scene = stackchan::SceneId::Bars;
+  bool controlStdio = false;
+};
+
+struct ControlInput {
+  std::string line;
+  bool discardingLine = false;
+  bool reachedEnd = false;
 };
 
 CommandLineOptions parseCommandLine(int argumentCount, char** arguments) {
@@ -31,13 +42,91 @@ CommandLineOptions parseCommandLine(int argumentCount, char** arguments) {
     const bool hasValue = index + 1 < argumentCount;
     const bool setsScreenshot = argument == "--screenshot" && hasValue;
     const bool setsScene = argument == "--scene" && hasValue;
+    const bool enablesControlStdio = argument == "--control-stdio";
     if (setsScreenshot) {
       options.screenshotPath = arguments[++index];
     } else if (setsScene) {
       options.scene = stackchan::sceneFromId(arguments[++index]);
+    } else if (enablesControlStdio) {
+      options.controlStdio = true;
     }
   }
   return options;
+}
+
+void dispatchControlLine(stackchan::ControlService& service,
+                         const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
+                         const std::string& line) {
+  const auto request = stackchan::parseControlRequest(line);
+  const auto result = service.dispatch(request, audio, nowMs, nowMs ^ 0x9E3779B9U);
+  std::cout << result.response << '\n' << std::flush;
+}
+
+void consumeControlBytes(stackchan::ControlService& service,
+                         const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
+                         ControlInput& input, const char* bytes, std::size_t count) {
+  constexpr std::size_t kMaximumControlLine = 65536;
+  for (std::size_t index = 0; index < count; ++index) {
+    const char character = bytes[index];
+    const bool endsLine = character == '\n';
+    if (endsLine) {
+      const bool hasCompleteLine = !input.discardingLine && !input.line.empty();
+      if (hasCompleteLine) {
+        dispatchControlLine(service, audio, nowMs, input.line);
+      }
+      input.line.clear();
+      input.discardingLine = false;
+      continue;
+    }
+    const bool ignoresCarriageReturn = character == '\r';
+    const bool ignoresCharacter = ignoresCarriageReturn || input.discardingLine;
+    if (ignoresCharacter) {
+      continue;
+    }
+    const bool hasCapacity = input.line.size() < kMaximumControlLine;
+    if (hasCapacity) {
+      input.line.push_back(character);
+    } else {
+      input.line.clear();
+      input.discardingLine = true;
+      std::cout << stackchan::encodeControlError(0, "request exceeds 65536 bytes") << '\n'
+                << std::flush;
+    }
+  }
+}
+
+void pollControlStdio(stackchan::ControlService& service,
+                      const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
+                      ControlInput& input) {
+  pollfd descriptor{STDIN_FILENO, static_cast<short>(POLLIN | POLLHUP), 0};
+  const int ready = poll(&descriptor, 1, 0);
+  const bool hasInput = ready > 0 && (descriptor.revents & POLLIN) != 0;
+  const bool hasHangup = ready > 0 && (descriptor.revents & POLLHUP) != 0;
+  bool reachedEnd = false;
+  const bool canRead = hasInput || hasHangup;
+  if (canRead) {
+    std::array<char, 4096> bytes{};
+    ssize_t count = 0;
+    do {
+      count = read(STDIN_FILENO, bytes.data(), bytes.size());
+      const bool readBytes = count > 0;
+      if (!readBytes) {
+        reachedEnd = count == 0;
+        continue;
+      }
+      consumeControlBytes(service, audio, nowMs, input, bytes.data(),
+                          static_cast<std::size_t>(count));
+    } while (hasHangup && count > 0);
+  }
+  const bool inputFinished = hasHangup || reachedEnd;
+  if (inputFinished) {
+    const bool hasPendingLine = !input.discardingLine && !input.line.empty();
+    if (hasPendingLine) {
+      dispatchControlLine(service, audio, nowMs, input.line);
+      input.line.clear();
+    }
+    input.reachedEnd = true;
+  }
 }
 
 void writeLittleEndian(std::ofstream& output, std::uint32_t value, int byteCount) {
@@ -235,6 +324,8 @@ int main(int argumentCount, char** arguments) {
   stackchan::Settings settings{};
   settings.scene = options.scene;
   stackchan::RuntimeController runtime(settings);
+  stackchan::ControlService controlService(runtime, analyzer);
+  ControlInput controlInput{};
   std::array<std::int16_t, 256> samples{};
   std::uint32_t previousTicks = SDL_GetTicks();
   bool isRunning = true;
@@ -273,6 +364,11 @@ int main(int argumentCount, char** arguments) {
     fillSyntheticAudio(samples, elapsedSeconds);
     const auto audio = analyzer.process(samples.data(), samples.size(), kSampleRate,
                                         runtime.settings().gain, currentTicks);
+    controlService.updateTimeline(audio, elapsedSeconds);
+    const bool usesControlStdio = options.controlStdio;
+    if (usesControlStdio) {
+      pollControlStdio(controlService, audio, currentTicks, controlInput);
+    }
     runtime.update(audio, deltaSeconds, currentTicks);
     sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
                        deltaSeconds, elapsedSeconds * 12.0F);
@@ -290,6 +386,10 @@ int main(int argumentCount, char** arguments) {
       isRunning = false;
     } else {
       SDL_RenderPresent(renderer);
+    }
+    const bool controlInputFinished = options.controlStdio && controlInput.reachedEnd;
+    if (controlInputFinished) {
+      isRunning = false;
     }
     SDL_Delay(16);
   }

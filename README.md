@@ -16,9 +16,13 @@ direnv allow       # devShell 読み込み時に pre-commit hook も自動設定
 just setup         # 初回の JS 依存インストール
 just compile       # ハードウェア非依存 C++ コアとホストシミュレーターをビルド
 just run           # 320x240 CoreS3 ホストシミュレーターを起動
+just run-control   # 1行1JSONをstdin/stdoutで操作できるホストシミュレーター
+just host-bridge   # SDLシミュレーターを既存vj-ctlへWebSocket接続
+just device-bridge /dev/cu.usbmodemXXXX # CoreS3を既存vj-ctlへ接続
 just test-host     # 実機不要の C++ テスト
+just control-check # ホスト上で外部制御とTimeline発火を結合テスト
 just firmware      # CoreS3 ファームウェアをクロスビルド（実機不要）
-just all           # format/lint/security/test/build をまとめて検証
+just all           # format/lint/security/test/Web/host/CoreS3 buildを一括検証
 ```
 
 direnv を使わない場合も、`nix develop --command just all` のように実行できます。
@@ -34,8 +38,25 @@ CoreS3画面は、短いタップで左から「前のシーン / TAP / 次の�
 「÷2 / AUTO / ×2」として操作できます。本体タッチセンサーはクリックでガチャ、
 前後スワイプでシーン切替です。
 
-USB Serial（115200 baud）は、1行1JSONの制御要求を受け付けます。応答は既存Bridgeと
-同じ`{"id": ..., "result": ...}`または`{"id": ..., "error": ...}`形式です。
+ホストの`--control-stdio`とUSB Serial（115200 baud）は、同じ1行1JSONの制御要求を
+受け付けます。応答は既存Bridgeと同じ`{"id": ..., "result": ...}`または
+`{"id": ..., "error": ...}`形式です。ホストでは、たとえば次のように実機なしで
+プロトコルを確認できます。
+
+```bash
+printf '%s\n' '{"id":1,"method":"getState"}' |
+  SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --control-stdio
+```
+
+既存CLIから操作する場合は、別ターミナルでBridge付きシミュレーターを起動してから
+通常の`vj-ctl`を使います。
+
+```bash
+just host-bridge
+# 別ターミナル
+node scripts/vj-ctl.mjs seed "humid-night-market"
+node scripts/vj-ctl.mjs state
+```
 
 ```json
 {"id":1,"method":"getState"}
@@ -46,6 +67,8 @@ USB Serial（115200 baud）は、1行1JSONの制御要求を受け付けます�
 {"id":6,"method":"tempoMultiply","params":{"factor":2}}
 {"id":7,"method":"tempoAuto"}
 {"id":8,"method":"reroll"}
+{"id":9,"method":"applyTimelineOp","params":{"op":{"op":"setLockedUntil","sec":60}}}
+{"id":10,"method":"fireExternal","params":{"id":"drop"}}
 ```
 
 ### 移植状況
@@ -56,11 +79,13 @@ USB Serial（115200 baud）は、1行1JSONの制御要求を受け付けます�
 | 10固定シーン・4 variants | 対応 | 対応 | GPUシーンはM5GFX向けCPU表現 |
 | look gacha・オートサイクル | 対応 | 対応 | seedと設定をNVSへ保存 |
 | Stack-chan本体連動 | ― | 対応 | タッチ、RGB、サーボ |
-| Semantic Synth固定フォールバック | 対応 | 対応 | seed由来の決定的CPU表現 |
+| Semantic Synth CPUバックエンド | 対応 | 対応 | seed/Patch JSON由来の決定的CPU表現 |
 | Semantic Synth 100 Generator / GLSL Patch | ブラウザ版のみ | 未対応 | WebGL2依存のため別バックエンドが必要 |
-| Timelineデータモデル・scheduler | 対応 | 対応 | 実機UIからのイベント編集は未対応 |
-| 基本外部操作 | ― | USB Serial対応 | state、seed、scene、tempo、reroll |
-| WebSocket CLI、録画、画像Patch | ブラウザ版のみ | 未対応 | USB SerialとのホストBridge・SD設計が必要 |
+| Timelineデータモデル・scheduler | 対応 | 対応 | 秒・小節・外部anchorを実行ループへ接続済み |
+| 外部操作 | stdio対応 | USB Serial対応 | state、Patch、seed、scene、tempo、Timeline |
+| WebSocket CLI | 対応 | 対応 | `just host-bridge` / `just device-bridge DEVICE` |
+| 録画・再生 | 対応 | 対応 | ブラウザ互換JSON、Timeline操作・発火履歴を保持 |
+| 画像Patch | ブラウザ版のみ | 未対応 | SD/PSRAMを含む保存・decode設計が必要 |
 
 実機が未準備のため、現段階のCoreS3確認範囲はクロスコンパイルまでです。サーボの
 可動範囲、マイク感度、タッチ方向、描画フレームレートは実機入手後に校正します。

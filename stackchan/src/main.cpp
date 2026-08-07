@@ -16,17 +16,19 @@ namespace {
 
 constexpr std::uint32_t kSampleRate = 16000;
 constexpr std::size_t kSampleCount = 256;
-constexpr std::size_t kMaximumControlLine = 1024;
+constexpr std::size_t kMaximumControlLine = 65536;
 
 std::array<std::int16_t, kSampleCount> samples{};
 stackchan::AudioAnalyzer analyzer;
 stackchan::RuntimeController runtime;
+stackchan::ControlService controlService(runtime, analyzer);
 stackchan::SceneRenderer sceneRenderer;
 M5Canvas frameBuffer(&M5StackChan.Display());
 Preferences preferences;
 std::uint32_t previousMillis = 0;
 std::uint32_t lastMotionBar = 0;
 std::string controlLine;
+bool discardingControlLine = false;
 
 std::uint16_t toRgb565(stackchan::Color color) {
   return static_cast<std::uint16_t>(((color.red & 0xF8U) << 8U) | ((color.green & 0xFCU) << 3U) |
@@ -207,57 +209,9 @@ bool handleInput(std::uint32_t entropy, std::uint32_t nowMs) {
 bool dispatchControl(const stackchan::ControlRequest& request,
                      const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
                      std::uint32_t entropy) {
-  if (!request.ok) {
-    Serial.println(stackchan::encodeControlError(request.id, request.issue).c_str());
-    return false;
-  }
-
-  bool settingsChanged = false;
-  switch (request.method) {
-  case stackchan::ControlMethod::GetState: {
-    const stackchan::ControlSnapshot snapshot{&runtime.settings(), &audio.tempo,
-                                              runtime.variationTransitionActive(),
-                                              static_cast<double>(nowMs) / 1000.0};
-    Serial.println(stackchan::encodeControlState(request.id, snapshot).c_str());
-    return false;
-  }
-  case stackchan::ControlMethod::ProposeSeed: {
-    auto settings = runtime.settings();
-    settings.seed = request.text;
-    runtime.setSettings(std::move(settings));
-    settingsChanged = true;
-    break;
-  }
-  case stackchan::ControlMethod::SetScene: {
-    auto settings = runtime.settings();
-    settings.scene = stackchan::sceneFromId(request.text);
-    runtime.setSettings(std::move(settings));
-    settingsChanged = true;
-    break;
-  }
-  case stackchan::ControlMethod::ShiftScene:
-    runtime.shiftScene(static_cast<int>(request.number));
-    settingsChanged = true;
-    break;
-  case stackchan::ControlMethod::Reroll:
-    runtime.reroll(entropy);
-    settingsChanged = true;
-    break;
-  case stackchan::ControlMethod::TapTempo:
-    analyzer.tapTempo(nowMs);
-    break;
-  case stackchan::ControlMethod::TempoMultiply:
-    analyzer.tempoMultiply(request.number);
-    break;
-  case stackchan::ControlMethod::TempoAuto:
-    analyzer.tempoAuto();
-    break;
-  case stackchan::ControlMethod::Unknown:
-    Serial.println(stackchan::encodeControlError(request.id, "unknown method").c_str());
-    return false;
-  }
-  Serial.println(stackchan::encodeControlAck(request.id).c_str());
-  return settingsChanged;
+  const auto result = controlService.dispatch(request, audio, nowMs, entropy);
+  Serial.println(result.response.c_str());
+  return result.settingsChanged;
 }
 
 bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
@@ -268,6 +222,11 @@ bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32
     const bool endsLine = character == '\n';
     const bool ignoresCarriageReturn = character == '\r';
     if (endsLine) {
+      if (discardingControlLine) {
+        discardingControlLine = false;
+        controlLine.clear();
+        continue;
+      }
       const bool hasRequest = !controlLine.empty();
       if (hasRequest) {
         const auto request = stackchan::parseControlRequest(controlLine);
@@ -279,12 +238,16 @@ bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32
     if (ignoresCarriageReturn) {
       continue;
     }
+    if (discardingControlLine) {
+      continue;
+    }
     const bool hasCapacity = controlLine.size() < kMaximumControlLine;
     if (hasCapacity) {
       controlLine.push_back(character);
     } else {
       controlLine.clear();
-      Serial.println(stackchan::encodeControlError(0, "request exceeds 1024 bytes").c_str());
+      discardingControlLine = true;
+      Serial.println(stackchan::encodeControlError(0, "request exceeds 65536 bytes").c_str());
     }
   }
   return settingsChanged;
@@ -317,11 +280,14 @@ void loop() {
 
   const bool inputChangedSettings = handleInput(currentMillis ^ esp_random(), currentMillis);
   const auto audio = readAudio(currentMillis);
+  const bool timelineChangedSettings =
+      controlService.updateTimeline(audio, static_cast<double>(currentMillis) / 1000.0);
   const auto runtimeUpdate = runtime.update(audio, deltaSeconds, currentMillis ^ esp_random());
   const bool controlChangedSettings =
       handleSerialControl(audio, currentMillis, currentMillis ^ esp_random());
   const bool shouldPersist = inputChangedSettings || controlChangedSettings ||
-                             runtimeUpdate.sceneChanged || runtimeUpdate.variationChanged;
+                             timelineChangedSettings || runtimeUpdate.sceneChanged ||
+                             runtimeUpdate.variationChanged;
   if (shouldPersist) {
     saveSettings();
   }

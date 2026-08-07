@@ -16,6 +16,15 @@ compile: configure
 run: compile
     ./build/host/stackchan-simulator
 
+run-control: compile
+    ./build/host/stackchan-simulator --control-stdio
+
+host-bridge port="7877": compile
+    node scripts/stackchan-host.mjs --port {{port}}
+
+device-bridge device port="7877":
+    node scripts/stackchan-serial.mjs --device {{device}} --port {{port}}
+
 screenshot scene="semantic-synth" output="build/host/stackchan.bmp": compile
     SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --scene {{scene}} --screenshot {{output}}
 
@@ -25,6 +34,10 @@ snapshot-check: compile
 
 test-host: compile
     ctest --test-dir build/host --output-on-failure
+
+control-check: compile
+    SDL_VIDEODRIVER=dummy ./build/host/stackchan-simulator --control-stdio < stackchan/test/control_requests.jsonl > build/host/control-responses.jsonl
+    node scripts/check-stackchan-control.mjs build/host/control-responses.jsonl
 
 firmware:
     pio run --project-dir stackchan
@@ -75,4 +88,4 @@ secrets:
 secrets-staged:
     gitleaks git --pre-commit --staged --redact
 
-all: format-check lint actions secrets test-host snapshot-check web-test web-compile
+all: format-check lint actions secrets test-host control-check snapshot-check web-test web-compile firmware
