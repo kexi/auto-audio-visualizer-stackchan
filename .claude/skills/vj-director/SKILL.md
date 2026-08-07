@@ -149,7 +149,9 @@ node scripts/vj-ctl.mjs load recording.json
 
 ## ムードを実装に翻訳する
 
-依頼はたいてい「もっと湿った感じ」「懐かしい方向で」のような形容詞で来る。手順:
+依頼はたいてい「もっと湿った感じ」「懐かしい方向で」のような形容詞で来る。
+まず `vj-gen.mjs`(後述)でムード語から生成してみると、この手順の大部分を省けることが多い。
+ここでは vj-gen の結果を手で詰めるとき、または vj-gen が届かない作り込みのための手順を説明する。手順:
 
 1. **`catalog` でタグを眺める。** 各 Generator には 5 軸のタグが付いている
    （`environment` / `culturalTexture` / `material` / `motion` / `affect`）。
@@ -213,8 +215,111 @@ node scripts/vj-ctl.mjs load recording.json
 
 （パラメータ名・範囲は `catalog` の出力が正。上の値は形の例。）
 
+## vj-gen.mjs / vj-tweak.mjs — 手で Patch を組む前に
+
+「ムードを実装に翻訳する」の手順は結局のところ**手で Patch JSON を組む**作業で、タグを読んで
+operator を選び、パラメータを打ち込み、検証ゲートで弾かれたら直す…を繰り返すことになる。
+`scripts/vj-gen.mjs` と `scripts/vj-tweak.mjs` はこの手順をローカルで肩代わりする CLI で、
+どちらも `vj-ctl.mjs` を子プロセスとして呼ぶだけ（WebSocket 通信は自前で行わない）。**まず
+vj-gen を試して、狙いから外れた部分だけ vj-tweak で直す**のが速い。手で Patch を組むのは、
+この2つで届かない微調整だけでいい。
+
+両方とも `--url` か環境変数 `VJ_URL` が必要（`vj-ctl.mjs` と同じ）。送信前に
+`src/synth/validate.ts` と同じ規則でローカル検証するので、検証ゲートで弾かれてからの
+往復が減る。どちらも `scripts/.vj-catalog-cache.json`（gitignore 済み・コミットしない）に
+catalog をキャッシュし、次回以降は `vj-ctl.mjs catalog` を叩かずに済ませる。catalog が
+更新されたのに古いキャッシュが残っていると、catalog に無い generator/parameter で
+ローカル検証が誤って通る/落ちることがあるので、そのときは `--refresh-catalog` を付ける。
+
+## vj-gen.mjs — ムード語から生成する
+
+`"雲 静寂 青"` のような気分語（日本語 / 英語 / ローマ字が混在してよい）を
+`scripts/vj-vocab.json` で引き、101 個の Generator カタログに対してタグ制約付きの
+**決定的な重み付きサンプリング**（Efraimidis–Spirakis）で operators / palette / composition /
+routes を組み立てる。**手書きプリセットは無い** — 同じ小さな語彙から無限のバリエーションが
+出る。同じ語 + 同じ seed なら常に同じ Patch になる（Math.random は使わない）。
+
+```bash
+# 生成してそのまま送る（seed は語から自動導出）
+node scripts/vj-gen.mjs --url wss://example.workers.dev/room/xxxx "雲 静寂 青"
+
+# 検証だけ通して中身を見る（送信しない）
+node scripts/vj-gen.mjs --url wss://example.workers.dev/room/xxxx --dry-run "雲 静寂 青"
+
+# 候補を3つ並べて比較する（送信は絶対にしない）
+node scripts/vj-gen.mjs --url wss://example.workers.dev/room/xxxx --count 3 "攻めた 派手"
+
+# seed を固定して再現する
+node scripts/vj-gen.mjs --url wss://example.workers.dev/room/xxxx --seed take2 "夜 青"
+
+# 今アクティブな Patch をベースに、タグの合わない operator だけ差し替える
+# （palette/composition は変えない）
+node scripts/vj-gen.mjs --url wss://example.workers.dev/room/xxxx --base --dry-run "夜 青"
+```
+
+オプション:
+
+| オプション | 効果 |
+|---|---|
+| `--dry-run` | 検証済みの Patch を stdout に出すだけで送信しない |
+| `--count <n>` | n 個の独立候補を配列で出す。**送信は絶対にしない**（比較専用） |
+| `--seed <s>` | 実効 seed を上書き（省略時は語から決定的に導出） |
+| `--base` | 今の Patch をベースに、タグが合わない operator だけ入れ替える |
+| `--refresh-catalog` | catalog キャッシュを無視して取り直す |
+
+収録語は `scripts/vj-vocab.json`。1語 = `{ aliases, tags(5軸), composition/palette の数値ヒント,
+energy }` の素の JSON マップで、**追記して育てられる**。手で足りない語に当たったら、近い
+既存語のエントリを真似て追加すればよい（`tags` の軸は catalog 側の Generator が持つ軸 —
+`affect` / `motion` / `material` / `environment` / `culturalTexture` — と一致させること）。
+
+## vj-tweak.mjs — 今の Patch の一部だけ差し替える
+
+vj-gen が「だいたい欲しい絵」を作る道具なら、vj-tweak は「今出ている絵から狙った箇所だけ
+動かす」道具。今アクティブな Patch を取得し、`<change>` トークン列で差分を表現し、送信前に
+ローカルで検証する。
+
+```bash
+# パラメータを1つ変える
+node scripts/vj-tweak.mjs --url wss://example.workers.dev/room/xxxx src0.frequency=4.2
+
+# operator を追加する（id 省略時は src0 のように自動採番）
+node scripts/vj-tweak.mjs --url wss://example.workers.dev/room/xxxx --dry-run +threshold:th1 th1.thresholdValue=0.6
+
+# operator を削除しつつ palette / qualityTier も変える
+node scripts/vj-tweak.mjs --url wss://example.workers.dev/room/xxxx -fld1 palette.mode=rainbow qualityTier=high
+
+# generator を差し替える（parameters はその generator の default に初期化される）
+node scripts/vj-tweak.mjs --url wss://example.workers.dev/room/xxxx --refresh-catalog src0:=noise-field
+```
+
+`<change>` トークン（7種、この順でチェックされる）:
+
+| トークン | 効果 | 例 |
+|---|---|---|
+| `-<opId>` | operator を削除 | `-fld1` |
+| `+<generatorId>[:<opId>]` | operator を追加（id 省略時は自動採番） | `+threshold:th1` |
+| `<opId>:=<generatorId>` | generator を差し替え（parameters は初期化） | `src0:=noise-field` |
+| `<opId>.<paramId>=<value>` | パラメータを変更 | `src0.frequency=4.2` |
+| `palette.<key>=<value>` | palette を変更（mode/hueOffset/saturation/lightness） | `palette.mode=triadic` |
+| `composition.<key>=<value>` | composition を変更（symmetry/scale/speed） | `composition.speed=1.5` |
+| `qualityTier=<value>` | qualityTier を変更（low/medium/high） | `qualityTier=high` |
+
+送信前のローカル検証は `src/synth/validate.ts` の主要ルール（generator/parameter の実在・型・
+範囲、enum、ステージ本数の上下限、`palette.mode`）を複製したもの。CLI は `.ts` を import
+できないので値は手で複製している — サーバ側のルールを変えたらここも合わせて直すこと。
+
+**operator の差し替え・削除をしたときは route の追従に注意。** `<opId>:=<generatorId>` や
+`-<opId>` で operator の generator が変わる/消えると、その operator のパラメータを target に
+していた route（や `operator:<opId>` を source にしていた route）が壊れたまま残ることが
+ある。vj-tweak は差し替え・削除のたびに route を洗い直し、実在しなくなった operator /
+パラメータを参照する route を自動的に落とす。**黙っては消さない** — 何を落としたかは必ず
+stderr に警告として出る。
+
 ## いつ何を使うか
 
+- **「〜な感じにして」「ムードで」「とりあえず変えて」** → `vj-gen.mjs "<mood words>"` を
+  まず試す。狙いが緩いときはそのまま送り、外れていたら `--count` で比較するか
+  `vj-tweak.mjs` で寄せる。手で Patch JSON を組むのは最後の手段。
 - **「すぐ変えて」** → `seed <s>`（狙いが緩いとき・ガチャでよいとき）か `patch <file>`（狙いが明確なとき）。
 - **「後で変えて」「サビで」「あと 1 分くらいしたら」** → `event add`。
   秒で言われたら `--in`、小節で言われたら `--bar`。予約した id は出力に入っているので控えておく。
