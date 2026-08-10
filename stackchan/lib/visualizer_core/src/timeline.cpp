@@ -45,17 +45,17 @@ std::string validateEvent(const VisualEvent& event) {
   if (!hasId) {
     return "event id must be non-empty";
   }
-  const std::string anchorIssue = validateAnchor(event.start);
+  std::string anchorIssue = validateAnchor(event.start);
   const bool hasAnchorIssue = !anchorIssue.empty();
   if (hasAnchorIssue) {
     return anchorIssue;
   }
-  const std::string durationIssue = validateDuration(event.duration);
+  std::string durationIssue = validateDuration(event.duration);
   const bool hasDurationIssue = !durationIssue.empty();
   if (hasDurationIssue) {
     return durationIssue;
   }
-  const std::string transitionIssue = validateTransition(event.transition);
+  std::string transitionIssue = validateTransition(event.transition);
   const bool hasTransitionIssue = !transitionIssue.empty();
   if (hasTransitionIssue) {
     return transitionIssue;

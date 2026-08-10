@@ -1064,9 +1064,9 @@ ParsedSettingsPatch parseSettingsPatch(const std::string& json, JsonView object)
       }
       const bool setsAutoCycle = key == "autoCycle";
       if (setsAutoCycle) {
-        parsed.patch.autoCycle = *enabled;
+        parsed.patch.autoCycle = enabled;
       } else {
-        parsed.patch.autoGacha = *enabled;
+        parsed.patch.autoGacha = enabled;
       }
       continue;
     }
@@ -1557,6 +1557,11 @@ ParsedRecording parsePerformanceRecording(const std::string& json) {
     return parsed;
   }
   const auto patchSeed = stringProperty(json, *patch, "seed");
+  const bool hasPatchSeed = patchSeed.has_value();
+  if (!hasPatchSeed) {
+    parsed.issue = "initialPatch seed must be a string";
+    return parsed;
+  }
   parsed.sessionSeed = *sessionSeed;
   parsed.initialPatchJson = json.substr(patch->begin, patch->end - patch->begin);
   parsed.initialIntent.seed = *patchSeed;

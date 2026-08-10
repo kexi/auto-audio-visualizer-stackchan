@@ -77,7 +77,7 @@ float easedProgress(float elapsedSeconds, double durationMs, TransitionEasing ea
 
 } // namespace
 
-RuntimeController::RuntimeController(Settings settings) { setSettings(settings); }
+RuntimeController::RuntimeController(Settings settings) { setSettings(std::move(settings)); }
 
 RuntimeUpdate RuntimeController::update(const AnalyzedAudioFrame& audio, float deltaSeconds,
                                         std::uint32_t entropy) {
@@ -207,7 +207,7 @@ bool RuntimeController::applyIntent(const SemanticIntent& intent,
   settings_.seed = declaredSeed;
   settings_ = sanitizeSettings(settings_);
   semanticPatchSeed_ = declaredSeed;
-  const std::string visualSeed = declaredSeed;
+  const std::string& visualSeed = declaredSeed;
   const float durationSeconds =
       transitionDurationSeconds(previousPatchJson_, patchJson_, transition);
   patchTransitionSpec_ = transition;

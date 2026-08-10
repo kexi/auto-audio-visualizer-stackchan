@@ -10,6 +10,9 @@ constexpr float kPi = 3.14159265358979323846F;
 constexpr float kEnvelopeBinMs = 10.0F;
 constexpr std::size_t kLagMin = 30;
 constexpr float kSilenceLevel = 0.015F;
+constexpr float kOnsetActivityFloor = 0.004F;
+constexpr std::uint64_t kAutomaticTempoTimeoutMs = 2000;
+constexpr std::uint64_t kMotionNoiseSuppressionMs = 220;
 
 float clamp(float value, float low, float high) { return std::clamp(value, low, high); }
 
@@ -40,6 +43,19 @@ void TempoTracker::update(float onset, float level, std::uint64_t nowMs) {
   lastUpdateMs_ = nowMs;
   updateInitialized_ = true;
   averageLevel_ += (level - averageLevel_) * 0.05F;
+
+  const bool hasMeaningfulOnset = onset >= kOnsetActivityFloor;
+  if (hasMeaningfulOnset) {
+    lastOnsetMs_ = nowMs;
+    hasOnsetActivity_ = true;
+  }
+  const bool hasAutomaticTempo = mode_ == TempoMode::Auto && baseBpm_ > 0.0F;
+  const bool hasOnsetTimedOut =
+      !hasOnsetActivity_ || nowMs > lastOnsetMs_ + kAutomaticTempoTimeoutMs;
+  const bool shouldResetAutomaticTempo = hasAutomaticTempo && hasOnsetTimedOut;
+  if (shouldResetAutomaticTempo) {
+    resetAutomaticTempo();
+  }
   accumulateEnvelope(onset, nowMs);
 
   const bool isAnalysisDue = nowMs >= lastAnalysisMs_ + 500;
@@ -73,6 +89,11 @@ void TempoTracker::accumulateEnvelope(float onset, std::uint64_t nowMs) {
 }
 
 void TempoTracker::analyze(std::uint64_t nowMs) {
+  const bool hasRecentOnset = hasOnsetActivity_ && nowMs <= lastOnsetMs_ + kAutomaticTempoTimeoutMs;
+  if (!hasRecentOnset) {
+    confidence_ = 0.0F;
+    return;
+  }
   const bool hasEnoughHistory = envelopeFilled_ >= 300;
   if (!hasEnoughHistory) {
     return;
@@ -142,6 +163,20 @@ void TempoTracker::analyze(std::uint64_t nowMs) {
   if (usesAutomaticPhase) {
     alignPhase(count, effectiveBpm(), nowMs);
   }
+}
+
+void TempoTracker::resetAutomaticTempo() {
+  baseBpm_ = 0.0F;
+  pendingCandidate_ = 0.0F;
+  confidence_ = 0.0F;
+  nextBeatMs_ = 0.0;
+  gridInitialized_ = false;
+  phaseLocked_ = false;
+  gridPulse_ = 0.0F;
+  barPulse_ = 0.0F;
+  outputGridBeat_ = false;
+  outputGridBar_ = false;
+  hasOnsetActivity_ = false;
 }
 
 void TempoTracker::updateBaseBpm(float candidate, float confidence) {
@@ -426,24 +461,38 @@ AnalyzedAudioFrame AudioAnalyzer::process(const std::int16_t* samples, std::size
   frame_.bass = clamp(smoothBass_ * gain, 0.0F, 1.0F);
   frame_.mid = clamp(smoothMid_ * gain, 0.0F, 1.0F);
   frame_.treble = clamp(smoothTreble_ * gain, 0.0F, 1.0F);
-  frame_.beat = detectBeat(rawBass, nowMs);
+  const float analysisBass = rawBass * gain;
+  const float analysisLevel = rootMeanSquare * gain;
+  const float onset = std::max(0.0F, analysisBass - previousAnalysisBass_);
+  previousAnalysisBass_ = analysisBass;
+  const bool suppressesMotionNoise = nowMs < suppressMotionNoiseUntilMs_;
+  if (suppressesMotionNoise) {
+    beatIntensity_ *= 0.92F;
+    frame_.beat = false;
+    tempo_.update(0.0F, 0.0F, nowMs);
+  } else {
+    frame_.beat = detectBeat(analysisBass, nowMs);
+    tempo_.update(onset, analysisLevel, nowMs);
+  }
   frame_.beatIntensity = beatIntensity_;
   frame_.running = true;
-  const float onset = std::max(0.0F, rawBass - previousRawBass_);
-  previousRawBass_ = rawBass;
-  tempo_.update(onset, rootMeanSquare, nowMs);
   frame_.tempo = tempo_.state();
   return frame_;
+}
+
+void AudioAnalyzer::suppressMotionNoise(std::uint64_t nowMs) {
+  suppressMotionNoiseUntilMs_ =
+      std::max(suppressMotionNoiseUntilMs_, nowMs + kMotionNoiseSuppressionMs);
 }
 
 float AudioAnalyzer::bandAverage(float lowHz, float highHz, std::uint32_t sampleRate) const {
   float sum = 0.0F;
   std::size_t count = 0;
   for (std::size_t bin = 0; bin < frame_.spectrum.size(); ++bin) {
-    const float frequency = (static_cast<float>(bin) + 1.0F) *
-                            (static_cast<float>(sampleRate) * 0.5F) /
-                            static_cast<float>(frame_.spectrum.size());
-    const bool isInBand = frequency >= lowHz && frequency < highHz;
+    const float upperFrequency = (static_cast<float>(bin) + 1.0F) *
+                                 (static_cast<float>(sampleRate) * 0.5F) /
+                                 static_cast<float>(frame_.spectrum.size());
+    const bool isInBand = upperFrequency > lowHz && upperFrequency <= highHz;
     if (isInBand) {
       sum += frame_.spectrum[bin];
       ++count;

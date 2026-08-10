@@ -20,6 +20,7 @@ public:
 private:
   std::uint64_t lastBeatNumber_ = 0;
   bool hasLastBeat_ = false;
+  bool wasTempoLocked_ = false;
 };
 
 } // namespace stackchan

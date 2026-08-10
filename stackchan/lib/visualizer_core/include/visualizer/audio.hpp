@@ -57,6 +57,7 @@ private:
 
   void accumulateEnvelope(float onset, std::uint64_t nowMs);
   void analyze(std::uint64_t nowMs);
+  void resetAutomaticTempo();
   void updateBaseBpm(float candidate, float confidence);
   void alignPhase(std::size_t count, float bpm, std::uint64_t nowMs);
   void tickGrid(std::uint64_t nowMs, float deltaSeconds);
@@ -74,6 +75,8 @@ private:
   std::uint64_t lastUpdateMs_ = 0;
   bool updateInitialized_ = false;
   std::uint64_t lastAnalysisMs_ = 0;
+  std::uint64_t lastOnsetMs_ = 0;
+  bool hasOnsetActivity_ = false;
   float averageLevel_ = 0.0F;
   float baseBpm_ = 0.0F;
   float manualBpm_ = 0.0F;
@@ -100,6 +103,7 @@ public:
   void tapTempo(std::uint64_t nowMs);
   void tempoMultiply(float factor);
   void tempoAuto();
+  void suppressMotionNoise(std::uint64_t nowMs);
 
 private:
   static constexpr std::size_t kBeatHistorySize = 43;
@@ -117,8 +121,9 @@ private:
   float smoothMid_ = 0.0F;
   float smoothTreble_ = 0.0F;
   float beatIntensity_ = 0.0F;
-  float previousRawBass_ = 0.0F;
+  float previousAnalysisBass_ = 0.0F;
   std::uint64_t lastBeatMs_ = 0;
+  std::uint64_t suppressMotionNoiseUntilMs_ = 0;
   std::vector<float> windowedSamples_{};
 };
 

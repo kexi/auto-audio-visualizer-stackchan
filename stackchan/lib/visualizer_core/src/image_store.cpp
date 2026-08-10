@@ -13,7 +13,7 @@
 namespace stackchan {
 namespace {
 
-constexpr std::size_t kMaximumImageBytes = 5U * 1024U * 1024U;
+constexpr std::size_t kMaximumImageBytes = std::size_t{5} * 1024U * 1024U;
 
 constexpr std::array<std::uint32_t, 64> kSha256Constants = {
     0x428A2F98U, 0x71374491U, 0xB5C0FBCFU, 0xE9B5DBA5U, 0x3956C25BU, 0x59F111F1U, 0x923F82A4U,
@@ -338,12 +338,12 @@ ImageStoreResult ImageStore::putBase64(const std::string& name, const std::strin
     return {false, "invalid or empty base64 payload", nullptr};
   }
   const std::size_t expectedBytes = bytesBase64.size() / 4U * 3U - padding;
-  const auto began = beginBase64(name, mime, expectedBytes);
+  auto began = beginBase64(name, mime, expectedBytes);
   const bool didBegin = began.ok;
   if (!didBegin) {
     return began;
   }
-  const auto appended = appendBase64(bytesBase64);
+  auto appended = appendBase64(bytesBase64);
   const bool didAppend = appended.ok;
   if (!didAppend) {
     cancelBase64();

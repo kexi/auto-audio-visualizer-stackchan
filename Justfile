@@ -88,6 +88,9 @@ format-check:
     pnpm format:check
     rg --files stackchan -g '*.cpp' -g '*.hpp' | xargs clang-format --dry-run --Werror
 
+tidy: configure
+    run-clang-tidy -p build/host -j 2 -quiet
+
 lint:
     pnpm lint
 
@@ -111,4 +114,4 @@ secrets:
 secrets-staged:
     gitleaks git --pre-commit --staged --redact
 
-all: catalog-check format-check lint actions secrets test-host control-check image-check audio-check scene-check web-test web-compile firmware
+all: catalog-check format-check tidy lint actions secrets test-host control-check image-check audio-check scene-check web-test web-compile firmware

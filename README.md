@@ -7,8 +7,8 @@
 
 ## CoreS3 ホスト開発
 
-Nix と direnv を利用すると、Node.js、pnpm、CMake、SDL2、PlatformIO、just、
-lefthook、gitleaks、pinact、actionlint が同じ devShell に揃います。
+Nix と direnv を利用すると、Node.js、pnpm、CMake、clang-tidy、SDL2、PlatformIO、
+just、lefthook、gitleaks、pinact、actionlint が同じ devShell に揃います。
 ビルドや検証に使うツールはすべて `flake.nix` から供給されるため、個別の
 グローバルインストールは不要です。
 
@@ -23,6 +23,7 @@ just run-control   # 1行1JSONをstdin/stdoutで操作できるホストシミ�
 just host-bridge   # SDLシミュレーターを既存vj-ctlへWebSocket接続
 just device-bridge /dev/cu.usbmodemXXXX # CoreS3を既存vj-ctlへ接続
 just test-host     # 実機不要の C++ テスト
+just tidy          # C++をclang-tidyで静的解析（警告もエラー扱い）
 just scene-check   # 全11シーンをSDLで描画してスクリーンショット検証
 just control-check # ホスト上で外部制御とTimeline発火を結合テスト
 just firmware      # CoreS3 ファームウェアをクロスビルド（実機不要）

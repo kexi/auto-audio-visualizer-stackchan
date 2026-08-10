@@ -248,6 +248,11 @@ int main() {
   assert(automaticTempo.state().locked);
   assert(isNear(automaticTempo.state().bpm, 120.0F, 1.0F));
   assert(automaticHeadbangCount >= 20);
+  for (std::uint64_t nowMs = 20010; nowMs <= 22010; nowMs += 10) {
+    automaticTempo.update(0.0F, 0.0F, nowMs);
+  }
+  assert(!automaticTempo.state().locked);
+  assert(automaticTempo.state().bpm == 0.0F);
 
   // ロック済みの各拍で首が上下交互に動き、同じ拍を二重処理しないことを保証する。
   stackchan::HeadbangController headbang;
@@ -266,10 +271,17 @@ int main() {
   assert(upwardHeadbang.shouldMove);
   assert(upwardHeadbang.pitch == 700);
   assert(upwardHeadbang.speed == 950);
+  headbangTempo.locked = false;
+  headbangTempo.gridBeat = false;
+  const auto centeredHeadbang = headbang.update(headbangTempo, 0.0F);
+  assert(centeredHeadbang.shouldMove);
+  assert(centeredHeadbang.yaw == 0);
+  assert(centeredHeadbang.pitch == 350);
+  assert(centeredHeadbang.speed == 400);
+  assert(!headbang.update(headbangTempo, 0.0F).shouldMove);
 
   // テンポが未ロックの拍ではサーボ指令を出さないことを保証する。
   stackchan::HeadbangController unlockedHeadbang;
-  headbangTempo.locked = false;
   assert(!unlockedHeadbang.update(headbangTempo, 1.0F).shouldMove);
 
   // PCM解析がRMS・ピーク・波形・帯域を有限の正規化値として返すことを保証する。
@@ -287,6 +299,62 @@ int main() {
   assert(analyzed.waveform[1] != 0.0F);
   assert(analyzed.spectrum[0] > 0.3F);
   assert(analyzed.spectrum[0] > analyzed.spectrum[1] * 10.0F);
+  assert(analyzed.bass > 0.1F);
+
+  // 小音量の周期的な低音でもgainを上げると自動BPMがロックすることを保証する。
+  std::array<std::int16_t, 256> backgroundSamples{};
+  std::array<std::int16_t, 256> kickSamples{};
+  for (std::size_t index = 0; index < backgroundSamples.size(); ++index) {
+    const float time = static_cast<float>(index) / 16000.0F;
+    const float background = std::sin(2.0F * 3.14159265F * 1000.0F * time) * 300.0F;
+    const float kick = std::sin(2.0F * 3.14159265F * 250.0F * time) * 500.0F;
+    backgroundSamples[index] = static_cast<std::int16_t>(background);
+    kickSamples[index] = static_cast<std::int16_t>(background + kick);
+  }
+  stackchan::AudioAnalyzer quietAutomaticAnalyzer;
+  stackchan::AudioAnalyzer boostedAutomaticAnalyzer;
+  stackchan::AnalyzedAudioFrame quietAutomaticFrame{};
+  stackchan::AnalyzedAudioFrame boostedAutomaticFrame{};
+  for (std::uint64_t nowMs = 0; nowMs <= 20000; nowMs += 20) {
+    const bool isKick = nowMs % 500U == 0U;
+    const auto& currentSamples = isKick ? kickSamples : backgroundSamples;
+    quietAutomaticFrame = quietAutomaticAnalyzer.process(currentSamples.data(),
+                                                         currentSamples.size(), 16000, 1.0F, nowMs);
+    boostedAutomaticFrame = boostedAutomaticAnalyzer.process(
+        currentSamples.data(), currentSamples.size(), 16000, 4.0F, nowMs);
+  }
+  assert(!quietAutomaticFrame.tempo.locked);
+  assert(boostedAutomaticFrame.tempo.locked);
+  assert(isNear(boostedAutomaticFrame.tempo.bpm, 120.0F, 1.0F));
+
+  // サーボ動作音を除外すると無音後に自動BPMが解除されることを保証する。
+  stackchan::AudioAnalyzer ungatedFeedbackAnalyzer = boostedAutomaticAnalyzer;
+  stackchan::AudioAnalyzer gatedFeedbackAnalyzer = boostedAutomaticAnalyzer;
+  stackchan::AnalyzedAudioFrame ungatedFeedbackFrame{};
+  stackchan::AnalyzedAudioFrame gatedFeedbackFrame{};
+  std::array<std::int16_t, 256> silenceSamples{};
+  std::array<std::int16_t, 256> motorSamples{};
+  for (std::size_t index = 0; index < motorSamples.size(); ++index) {
+    const float time = static_cast<float>(index) / 16000.0F;
+    motorSamples[index] =
+        static_cast<std::int16_t>(std::sin(2.0F * 3.14159265F * 250.0F * time) * 500.0F);
+  }
+  for (std::uint64_t nowMs = 20020; nowMs <= 24020; nowMs += 20) {
+    const std::uint64_t elapsedMs = nowMs - 20020;
+    const bool startsServoMotion = elapsedMs % 500U == 0U;
+    if (startsServoMotion) {
+      gatedFeedbackAnalyzer.suppressMotionNoise(nowMs);
+    }
+    const bool hasMotorNoise = elapsedMs % 500U == 20U;
+    const auto& feedbackSamples = hasMotorNoise ? motorSamples : silenceSamples;
+    ungatedFeedbackFrame = ungatedFeedbackAnalyzer.process(
+        feedbackSamples.data(), feedbackSamples.size(), 16000, 4.0F, nowMs);
+    gatedFeedbackFrame = gatedFeedbackAnalyzer.process(feedbackSamples.data(),
+                                                       feedbackSamples.size(), 16000, 4.0F, nowMs);
+  }
+  assert(ungatedFeedbackFrame.tempo.locked);
+  assert(!gatedFeedbackFrame.tempo.locked);
+  assert(gatedFeedbackFrame.tempo.bpm == 0.0F);
 
   // 1サンプルの入力でもスペクトル値がNaNにならないことを保証する。
   const std::int16_t singleSample = 1200;
@@ -691,7 +759,7 @@ int main() {
   assert(restoredImageStore.latest()->storagePath == "/vj-images/restored.png");
 
   // 5 MiB上限の画像でもSHA-256計算用の全体コピーを作らず登録できることを保証する。
-  std::vector<std::uint8_t> maximumImageBytes(5U * 1024U * 1024U, 0U);
+  std::vector<std::uint8_t> maximumImageBytes(std::size_t{5} * 1024U * 1024U, 0U);
   constexpr std::array<std::uint8_t, 8> pngSignature = {0x89U, 0x50U, 0x4EU, 0x47U,
                                                         0x0DU, 0x0AU, 0x1AU, 0x0AU};
   std::copy(pngSignature.begin(), pngSignature.end(), maximumImageBytes.begin());

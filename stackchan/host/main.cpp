@@ -80,7 +80,7 @@ void dispatchControlLine(stackchan::ControlService& service,
 void consumeControlBytes(stackchan::ControlService& service,
                          const stackchan::AnalyzedAudioFrame& audio, std::uint32_t nowMs,
                          ControlInput& input, const char* bytes, std::size_t count) {
-  constexpr std::size_t kMaximumControlLine = 8U * 1024U * 1024U;
+  constexpr std::size_t kMaximumControlLine = std::size_t{8} * 1024U * 1024U;
   for (std::size_t index = 0; index < count; ++index) {
     const char character = bytes[index];
     const bool endsLine = character == '\n';
@@ -153,7 +153,8 @@ void writeLittleEndian(std::ofstream& output, std::uint32_t value, int byteCount
 bool saveScreenshot(const std::vector<std::uint8_t>& pixels, const std::string& path) {
   constexpr int kBytesPerPixel = 4;
   const int pitch = kWidth * kBytesPerPixel;
-  const bool hasExpectedSize = pixels.size() == static_cast<std::size_t>(pitch * kHeight);
+  const bool hasExpectedSize =
+      pixels.size() == static_cast<std::size_t>(pitch) * static_cast<std::size_t>(kHeight);
   if (!hasExpectedSize) {
     return false;
   }
@@ -515,7 +516,6 @@ int main(int argumentCount, char** arguments) {
       const bool didSave = saveScreenshot(screenshotPixels, options.screenshotPath);
       if (!didSave) {
         std::cerr << "failed to save screenshot: " << SDL_GetError() << '\n';
-        isRunning = false;
         canvas.releaseImages();
         const bool hasAudioDevice = audioDevice != 0;
         if (hasAudioDevice) {

@@ -249,6 +249,8 @@ Color hsl(float hue, float saturation, float lightness, std::uint8_t alpha) {
     red = chroma;
     blue = secondary;
     break;
+  default:
+    break;
   }
   const float match = normalizedLightness - chroma * 0.5F;
   return {
@@ -570,8 +572,10 @@ void SceneRenderer::drawFluid(Canvas& canvas, const AnalyzedAudioFrame& audio,
         const int edge = comesFromLeft ? 0 : canvas.width();
         drawX = edge + (comesFromLeft ? 1 : -1) * scaled((y + spacing) * 0.45F + warp);
       } else if (usesMandala) {
-        const float centeredX = static_cast<float>(drawX - canvas.width() / 2);
-        const float centeredY = static_cast<float>(drawY - canvas.height() / 2);
+        const float centeredX =
+            static_cast<float>(drawX) - static_cast<float>(canvas.width()) * 0.5F;
+        const float centeredY =
+            static_cast<float>(drawY) - static_cast<float>(canvas.height()) * 0.5F;
         const float radius = std::sqrt(centeredX * centeredX + centeredY * centeredY);
         const float angle = std::atan2(centeredY, centeredX);
         const float folded = std::fmod(std::abs(angle), kPi / 3.0F);

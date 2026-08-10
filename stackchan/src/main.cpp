@@ -358,6 +358,7 @@ void updateBody(const stackchan::AnalyzedAudioFrame& audio, const stackchan::Var
   const bool shouldMoveHead = headbang.shouldMove;
   if (shouldMoveHead) {
     M5StackChan.Motion.move(headbang.yaw, headbang.pitch, headbang.speed);
+    analyzer.suppressMotionNoise(nowMs);
   }
 }
 

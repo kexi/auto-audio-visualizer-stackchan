@@ -5,6 +5,9 @@ pre-commit:
       run: just format-check
     lint:
       run: just lint
+    tidy:
+      glob: '{.clang-tidy,CMakeLists.txt,stackchan/**/*.{cpp,hpp}}'
+      run: just tidy
     actions:
       glob: '.github/workflows/*.{yml,yaml}'
       run: just actions
