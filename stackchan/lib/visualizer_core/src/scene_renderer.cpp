@@ -661,15 +661,25 @@ void SceneRenderer::drawAurora(Canvas& canvas, const AnalyzedAudioFrame& audio,
   const int ribbons = 3 + variation.variant;
   const bool usesHorizonAurora = variation.variant == 1;
   const bool usesNebulaAurora = variation.variant == 2;
+  const float unitStep = 3.0F / canvas.width();
+  const float wavePhaseStep = unitStep * (5.0F + variation.symmetry);
+  const float waveCosStep = std::cos(wavePhaseStep);
+  const float waveSinStep = std::sin(wavePhaseStep);
+  const float noisePhaseStep = unitStep * 19.0F;
+  const float noiseCosStep = std::cos(noisePhaseStep);
+  const float noiseSinStep = std::sin(noisePhaseStep);
   for (int ribbon = 0; ribbon < ribbons; ++ribbon) {
     int previousX = 0;
     int previousY = canvas.height() / 2;
+    const float waveStart = elapsedSeconds * variation.speed + ribbon * 1.7F;
+    float waveSin = std::sin(waveStart);
+    float waveCos = std::cos(waveStart);
+    const float noiseStart = -elapsedSeconds * 0.4F + ribbon;
+    float noiseSin = std::sin(noiseStart);
+    float noiseCos = std::cos(noiseStart);
     for (int x = 0; x < canvas.width(); x += 3) {
-      const float unit = static_cast<float>(x) / canvas.width();
-      const float wave = std::sin(unit * (5.0F + variation.symmetry) +
-                                  elapsedSeconds * variation.speed + ribbon * 1.7F);
-      const float noise =
-          std::sin(unit * 19.0F - elapsedSeconds * 0.4F + ribbon) * variation.wobble;
+      const float wave = waveSin;
+      const float noise = noiseSin * variation.wobble;
       int y = scaled(canvas.height() * (0.18F + ribbon * 0.1F) +
                      (wave + noise) * (18.0F + audio.mid * 25.0F));
       if (usesHorizonAurora) {
@@ -687,6 +697,12 @@ void SceneRenderer::drawAurora(Canvas& canvas, const AnalyzedAudioFrame& audio,
       }
       previousX = x;
       previousY = y;
+      const float nextWaveSin = waveSin * waveCosStep + waveCos * waveSinStep;
+      waveCos = waveCos * waveCosStep - waveSin * waveSinStep;
+      waveSin = nextWaveSin;
+      const float nextNoiseSin = noiseSin * noiseCosStep + noiseCos * noiseSinStep;
+      noiseCos = noiseCos * noiseCosStep - noiseSin * noiseSinStep;
+      noiseSin = nextNoiseSin;
     }
   }
 }

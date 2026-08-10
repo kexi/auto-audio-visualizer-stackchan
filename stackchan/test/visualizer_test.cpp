@@ -1,6 +1,7 @@
 #include "visualizer/audio.hpp"
 #include "visualizer/control.hpp"
 #include "visualizer/generated_catalog.hpp"
+#include "visualizer/headbang.hpp"
 #include "visualizer/quality.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/scene_renderer.hpp"
@@ -215,6 +216,9 @@ int main() {
   tempo.update(0.0F, 0.0F, 1500);
   assert(tempo.state().mode == stackchan::TempoMode::Manual);
   assert(isNear(tempo.state().bpm, 120.0F, 0.01F));
+  tempo.update(0.0F, 0.0F, 2000);
+  stackchan::HeadbangController tappedHeadbang;
+  assert(tappedHeadbang.update(tempo.state(), 0.5F).shouldMove);
   tempo.multiply(2.0F);
   assert(isNear(tempo.state().bpm, 240.0F, 0.01F));
   tempo.setAuto();
@@ -222,12 +226,51 @@ int main() {
 
   // 120 BPMの規則的なonset列から自動テンポがロックすることを保証する。
   stackchan::TempoTracker automaticTempo;
+  stackchan::HeadbangController automaticHeadbang;
+  int automaticHeadbangCount = 0;
+  int previousAutomaticPitch = -1;
   for (std::uint64_t nowMs = 0; nowMs <= 20000; nowMs += 10) {
     const bool isKick = nowMs % 500U == 0U;
     automaticTempo.update(isKick ? 1.0F : 0.0F, 0.5F, nowMs);
+    const auto command = automaticHeadbang.update(automaticTempo.state(), isKick ? 1.0F : 0.0F);
+    const bool didMove = command.shouldMove;
+    if (didMove) {
+      const bool hasPreviousPitch = previousAutomaticPitch >= 0;
+      if (hasPreviousPitch) {
+        const bool movedDown = command.pitch < 350;
+        const bool previouslyMovedDown = previousAutomaticPitch < 350;
+        assert(movedDown != previouslyMovedDown);
+      }
+      previousAutomaticPitch = command.pitch;
+      ++automaticHeadbangCount;
+    }
   }
   assert(automaticTempo.state().locked);
   assert(isNear(automaticTempo.state().bpm, 120.0F, 1.0F));
+  assert(automaticHeadbangCount >= 20);
+
+  // ロック済みの各拍で首が上下交互に動き、同じ拍を二重処理しないことを保証する。
+  stackchan::HeadbangController headbang;
+  stackchan::TempoState headbangTempo{};
+  headbangTempo.locked = true;
+  headbangTempo.gridBeat = true;
+  headbangTempo.beatInBar = 1;
+  const auto downwardHeadbang = headbang.update(headbangTempo, -1.0F);
+  assert(downwardHeadbang.shouldMove);
+  assert(downwardHeadbang.yaw == 0);
+  assert(downwardHeadbang.pitch == 210);
+  assert(downwardHeadbang.speed == 600);
+  assert(!headbang.update(headbangTempo, 1.0F).shouldMove);
+  headbangTempo.beatInBar = 2;
+  const auto upwardHeadbang = headbang.update(headbangTempo, 2.0F);
+  assert(upwardHeadbang.shouldMove);
+  assert(upwardHeadbang.pitch == 700);
+  assert(upwardHeadbang.speed == 950);
+
+  // テンポが未ロックの拍ではサーボ指令を出さないことを保証する。
+  stackchan::HeadbangController unlockedHeadbang;
+  headbangTempo.locked = false;
+  assert(!unlockedHeadbang.update(headbangTempo, 1.0F).shouldMove);
 
   // PCM解析がRMS・ピーク・波形・帯域を有限の正規化値として返すことを保証する。
   std::array<std::int16_t, 256> samples{};
@@ -242,6 +285,8 @@ int main() {
   assert(analyzed.level > 0.0F && analyzed.level <= 1.0F);
   assert(analyzed.peak > 0.3F && analyzed.peak < 0.4F);
   assert(analyzed.waveform[1] != 0.0F);
+  assert(analyzed.spectrum[0] > 0.3F);
+  assert(analyzed.spectrum[0] > analyzed.spectrum[1] * 10.0F);
 
   // 1サンプルの入力でもスペクトル値がNaNにならないことを保証する。
   const std::int16_t singleSample = 1200;

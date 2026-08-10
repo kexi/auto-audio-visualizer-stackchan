@@ -15,6 +15,7 @@
 
 #include "visualizer/audio.hpp"
 #include "visualizer/control.hpp"
+#include "visualizer/headbang.hpp"
 #include "visualizer/runtime.hpp"
 #include "visualizer/scene_renderer.hpp"
 
@@ -27,17 +28,34 @@ constexpr const char* kImageDirectory = "/vj-images";
 
 std::array<std::int16_t, kSampleCount> samples{};
 stackchan::AudioAnalyzer analyzer;
+stackchan::AnalyzedAudioFrame analyzedAudio{};
 stackchan::RuntimeController runtime;
 stackchan::ControlService controlService(runtime, analyzer);
+stackchan::HeadbangController headbangController;
 stackchan::SceneRenderer sceneRenderer;
 M5Canvas frameBuffer(&M5StackChan.Display());
 Preferences preferences;
 std::uint32_t previousMillis = 0;
-std::uint32_t lastMotionBar = 0;
+std::uint32_t lastLedUpdateMs = 0;
 std::string controlLine;
 bool discardingControlLine = false;
 bool imageStorageReady = false;
+bool microphoneCapturePending = false;
+bool hasLedColor = false;
+std::uint16_t lastLedColor = 0;
 float frameBufferScale = 1.0F;
+
+struct PerformanceWindow {
+  std::uint32_t startedAtMs = 0;
+  std::uint32_t frameCount = 0;
+  std::uint64_t logicMicros = 0;
+  std::uint64_t audioMicros = 0;
+  std::uint64_t renderMicros = 0;
+  std::uint64_t presentMicros = 0;
+  std::uint64_t totalMicros = 0;
+};
+
+PerformanceWindow performance;
 
 std::uint16_t toRgb565(stackchan::Color color) {
   return static_cast<std::uint16_t>(((color.red & 0xF8U) << 8U) | ((color.green & 0xFCU) << 3U) |
@@ -145,6 +163,41 @@ void presentFrameBuffer() {
   M5StackChan.Display().setPivot(160, 120);
   const float zoom = 1.0F / frameBufferScale;
   frameBuffer.pushRotateZoom(&M5StackChan.Display(), 160.0F, 120.0F, 0.0F, zoom, zoom);
+}
+
+void observePerformance(std::uint32_t nowMs, std::uint32_t logicMicros, std::uint32_t audioMicros,
+                        std::uint32_t renderMicros, std::uint32_t presentMicros,
+                        std::uint32_t totalMicros) {
+  const bool needsWindowStart = performance.startedAtMs == 0;
+  if (needsWindowStart) {
+    performance.startedAtMs = nowMs;
+  }
+  ++performance.frameCount;
+  performance.logicMicros += logicMicros;
+  performance.audioMicros += audioMicros;
+  performance.renderMicros += renderMicros;
+  performance.presentMicros += presentMicros;
+  performance.totalMicros += totalMicros;
+
+  constexpr std::uint32_t kPerformanceWindowMs = 2000;
+  const std::uint32_t elapsedMs = nowMs - performance.startedAtMs;
+  const bool completedWindow = elapsedMs >= kPerformanceWindowMs;
+  if (!completedWindow) {
+    return;
+  }
+  const float frames = static_cast<float>(performance.frameCount);
+  const float fps = frames * 1000.0F / static_cast<float>(elapsedMs);
+  Serial.printf("{\"event\":\"performance\",\"fps\":%.2f,\"frameMs\":%.2f,\"logicMs\":%.2f,"
+                "\"audioMs\":%.2f,\"renderMs\":%.2f,\"presentMs\":%.2f,\"qualityScale\":%.2f,"
+                "\"scene\":\"%s\"}\n",
+                fps, static_cast<float>(performance.totalMicros) / frames / 1000.0F,
+                static_cast<float>(performance.logicMicros) / frames / 1000.0F,
+                static_cast<float>(performance.audioMicros) / frames / 1000.0F,
+                static_cast<float>(performance.renderMicros) / frames / 1000.0F,
+                static_cast<float>(performance.presentMicros) / frames / 1000.0F,
+                runtime.qualityScale(), stackchan::sceneId(runtime.settings().scene));
+  performance = {};
+  performance.startedAtMs = nowMs;
 }
 
 std::string imageExtension(const std::string& mime) {
@@ -267,29 +320,44 @@ void saveSettings() {
 }
 
 stackchan::AnalyzedAudioFrame readAudio(std::uint32_t nowMs) {
-  const bool didRecord = M5.Mic.record(samples.data(), samples.size(), kSampleRate);
-  if (!didRecord) {
-    return analyzer.process(nullptr, 0, kSampleRate, runtime.settings().gain, nowMs);
+  const bool captureStillRunning = microphoneCapturePending && M5.Mic.isRecording() > 0;
+  if (captureStillRunning) {
+    return analyzedAudio;
   }
-  return analyzer.process(samples.data(), samples.size(), kSampleRate, runtime.settings().gain,
-                          nowMs);
+  if (microphoneCapturePending) {
+    analyzedAudio = analyzer.process(samples.data(), samples.size(), kSampleRate,
+                                     runtime.settings().gain, nowMs);
+    microphoneCapturePending = false;
+  }
+  const bool didStartCapture = M5.Mic.record(samples.data(), samples.size(), kSampleRate);
+  if (didStartCapture) {
+    microphoneCapturePending = true;
+    return analyzedAudio;
+  }
+  return analyzer.process(nullptr, 0, kSampleRate, runtime.settings().gain, nowMs);
 }
 
-void updateBody(const stackchan::AnalyzedAudioFrame& audio, const stackchan::Variation& variation) {
+void updateBody(const stackchan::AnalyzedAudioFrame& audio, const stackchan::Variation& variation,
+                std::uint32_t nowMs) {
   const auto ledColor =
       stackchan::hsl(variation.hueOffset + audio.tempo.barPhase * 360.0F, variation.saturation,
                      4.0F + audio.level * 42.0F + audio.beatIntensity * 28.0F);
-  M5StackChan.showRgbColor(ledColor.red, ledColor.green, ledColor.blue);
+  const std::uint16_t packedLedColor = toRgb565(ledColor);
+  constexpr std::uint32_t kLedUpdateIntervalMs = 50;
+  const bool isLedUpdateDue = nowMs - lastLedUpdateMs >= kLedUpdateIntervalMs;
+  const bool didLedColorChange = !hasLedColor || packedLedColor != lastLedColor;
+  const bool shouldRefreshLeds = isLedUpdateDue && didLedColorChange;
+  if (shouldRefreshLeds) {
+    M5StackChan.showRgbColor(ledColor.red, ledColor.green, ledColor.blue);
+    lastLedUpdateMs = nowMs;
+    lastLedColor = packedLedColor;
+    hasLedColor = true;
+  }
 
-  const bool isNewBar = audio.tempo.gridBar && audio.tempo.barCount != lastMotionBar;
-  if (isNewBar) {
-    lastMotionBar = audio.tempo.barCount;
-    const float randomX = variation.random(audio.tempo.barCount);
-    const float randomY = variation.random(audio.tempo.barCount + 1000U);
-    const int yaw = static_cast<int>((randomX * 2.0F - 1.0F) * 550.0F);
-    const int pitch = static_cast<int>(180.0F + randomY * 420.0F);
-    const int speed = static_cast<int>(250.0F + audio.bass * 450.0F);
-    M5StackChan.Motion.move(yaw, pitch, speed);
+  const auto headbang = headbangController.update(audio.tempo, audio.beatIntensity);
+  const bool shouldMoveHead = headbang.shouldMove;
+  if (shouldMoveHead) {
+    M5StackChan.Motion.move(headbang.yaw, headbang.pitch, headbang.speed);
   }
 }
 
@@ -397,6 +465,7 @@ bool handleSerialControl(const stackchan::AnalyzedAudioFrame& audio, std::uint32
 void setup() {
   Serial.begin(921600);
   M5StackChan.begin();
+  M5StackChan.Motion.setAutoAngleSyncEnabled(false);
   loadPersistedImages();
   preferences.begin("visualizer", false);
   runtime.setSettings(loadSettings());
@@ -413,6 +482,7 @@ void setup() {
 }
 
 void loop() {
+  const std::uint32_t loopStartedAtMicros = micros();
   M5StackChan.update();
   const std::uint32_t currentMillis = millis();
   const float deltaSeconds =
@@ -420,7 +490,9 @@ void loop() {
   previousMillis = currentMillis;
 
   const bool inputChangedSettings = handleInput(currentMillis ^ esp_random(), currentMillis);
+  const std::uint32_t audioStartedAtMicros = micros();
   const auto audio = readAudio(currentMillis);
+  const std::uint32_t audioFinishedAtMicros = micros();
   const bool timelineChangedSettings =
       controlService.updateTimeline(audio, static_cast<double>(currentMillis) / 1000.0);
   const auto runtimeUpdate = runtime.update(audio, deltaSeconds, currentMillis ^ esp_random());
@@ -432,16 +504,26 @@ void loop() {
   if (shouldPersist) {
     saveSettings();
   }
-  updateBody(audio, runtime.variation());
+  updateBody(audio, runtime.variation(), currentMillis);
   setFrameBufferScale(runtime.qualityScale());
 
   const float elapsedSeconds = static_cast<float>(currentMillis) / 1000.0F;
   const float hue = runtime.settings().hueMode == stackchan::HueMode::Fixed
                         ? runtime.settings().fixedHue
                         : elapsedSeconds * 12.0F * runtime.variation().speed;
+  const std::uint32_t renderStartedAtMicros = micros();
   sceneRenderer.draw(canvas, runtime.settings().scene, audio, runtime.variation(), elapsedSeconds,
                      deltaSeconds, hue, runtime.patchJson(), &controlService.images(),
                      runtime.settings().background, runtime.previousPatchJson(),
                      runtime.patchTransitionProgress());
+  const std::uint32_t renderFinishedAtMicros = micros();
   presentFrameBuffer();
+  const std::uint32_t loopFinishedAtMicros = micros();
+  const std::uint32_t audioMicros = audioFinishedAtMicros - audioStartedAtMicros;
+  const std::uint32_t renderMicros = renderFinishedAtMicros - renderStartedAtMicros;
+  const std::uint32_t presentMicros = loopFinishedAtMicros - renderFinishedAtMicros;
+  const std::uint32_t totalMicros = loopFinishedAtMicros - loopStartedAtMicros;
+  const std::uint32_t logicMicros = totalMicros - audioMicros - renderMicros - presentMicros;
+  observePerformance(currentMillis, logicMicros, audioMicros, renderMicros, presentMicros,
+                     totalMicros);
 }

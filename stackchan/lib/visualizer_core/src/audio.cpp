@@ -371,23 +371,40 @@ AnalyzedAudioFrame AudioAnalyzer::process(const std::int16_t* samples, std::size
     frame_.waveform[index] = static_cast<float>(samples[sourceIndex]) / 32768.0F;
   }
 
+  windowedSamples_.resize(count);
+  const bool canApplyHannWindow = count > 1;
+  const float windowPhaseStep =
+      canApplyHannWindow ? 2.0F * kPi / static_cast<float>(count - 1) : 0.0F;
+  const float windowCosStep = std::cos(windowPhaseStep);
+  const float windowSinStep = std::sin(windowPhaseStep);
+  float windowCos = 1.0F;
+  float windowSin = 0.0F;
+  for (std::size_t index = 0; index < count; ++index) {
+    const float sample = static_cast<float>(samples[index]) / 32768.0F;
+    const float window = canApplyHannWindow ? 0.5F - 0.5F * windowCos : 1.0F;
+    windowedSamples_[index] = sample * window;
+    const float nextWindowCos = windowCos * windowCosStep - windowSin * windowSinStep;
+    windowSin = windowSin * windowCosStep + windowCos * windowSinStep;
+    windowCos = nextWindowCos;
+  }
+
   for (std::size_t bin = 0; bin < frame_.spectrum.size(); ++bin) {
     const float frequency = (static_cast<float>(bin) + 1.0F) *
                             (static_cast<float>(sampleRate) * 0.5F) /
                             static_cast<float>(frame_.spectrum.size());
+    const float phaseStep = 2.0F * kPi * frequency / static_cast<float>(sampleRate);
+    const float phaseCosStep = std::cos(phaseStep);
+    const float phaseSinStep = std::sin(phaseStep);
+    float phaseCos = 1.0F;
+    float phaseSin = 0.0F;
     float real = 0.0F;
     float imaginary = 0.0F;
-    const bool canApplyHannWindow = count > 1;
-    for (std::size_t index = 0; index < count; ++index) {
-      const float sample = static_cast<float>(samples[index]) / 32768.0F;
-      const float phase =
-          2.0F * kPi * frequency * static_cast<float>(index) / static_cast<float>(sampleRate);
-      const float window = canApplyHannWindow
-                               ? 0.5F - 0.5F * std::cos(2.0F * kPi * static_cast<float>(index) /
-                                                        static_cast<float>(count - 1))
-                               : 1.0F;
-      real += sample * window * std::cos(phase);
-      imaginary -= sample * window * std::sin(phase);
+    for (const float sample : windowedSamples_) {
+      real += sample * phaseCos;
+      imaginary -= sample * phaseSin;
+      const float nextPhaseCos = phaseCos * phaseCosStep - phaseSin * phaseSinStep;
+      phaseSin = phaseSin * phaseCosStep + phaseCos * phaseSinStep;
+      phaseCos = nextPhaseCos;
     }
     frame_.spectrum[bin] =
         clamp(std::sqrt(real * real + imaginary * imaginary) * 4.0F / static_cast<float>(count),

@@ -9,6 +9,7 @@ add_library(
   visualizer_core
   stackchan/lib/visualizer_core/src/audio.cpp
   stackchan/lib/visualizer_core/src/control.cpp
+  stackchan/lib/visualizer_core/src/headbang.cpp
   stackchan/lib/visualizer_core/src/image_store.cpp
   stackchan/lib/visualizer_core/src/quality.cpp
   stackchan/lib/visualizer_core/src/runtime.cpp

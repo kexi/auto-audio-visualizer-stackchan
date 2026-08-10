@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace stackchan {
 
@@ -118,6 +119,7 @@ private:
   float beatIntensity_ = 0.0F;
   float previousRawBass_ = 0.0F;
   std::uint64_t lastBeatMs_ = 0;
+  std::vector<float> windowedSamples_{};
 };
 
 } // namespace stackchan
